@@ -150,6 +150,11 @@ public class SettingsActivity extends PreferenceActivity {
             bindPreferenceSummaryToValue(findPreference("nthreads_value"));
             bindPreferenceSummaryToValue(findPreference("tag_family_list"));
             bindPreferenceSummaryToValue(findPreference("max_hamming_error"));
+            bindPreferenceSummaryToValue(findPreference("apriltag_size"));
+            bindPreferenceSummaryToValue(findPreference("calibration_fx"));
+            bindPreferenceSummaryToValue(findPreference("calibration_fy"));
+            bindPreferenceSummaryToValue(findPreference("calibration_cx"));
+            bindPreferenceSummaryToValue(findPreference("calibration_cy"));
         }
 
         @Override

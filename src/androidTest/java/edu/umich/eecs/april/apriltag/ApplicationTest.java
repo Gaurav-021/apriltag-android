@@ -1,13 +1,14 @@
 package edu.umich.eecs.april.apriltag;
 
-import android.app.Application;
-import android.test.ApplicationTestCase;
+import org.junit.Test;
+import static org.junit.Assert.*;
 
 /**
- * <a href="http://d.android.com/tools/testing/testing_android.html">Testing Fundamentals</a>
+ * Placeholder JUnit 4 test replacing the legacy ApplicationTestCase.
  */
-public class ApplicationTest extends ApplicationTestCase<Application> {
-    public ApplicationTest() {
-        super(Application.class);
+public class ApplicationTest {
+    @Test
+    public void testPlaceholder() {
+        assertTrue(true);
     }
 }

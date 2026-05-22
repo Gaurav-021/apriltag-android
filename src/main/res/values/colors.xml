@@ -9,4 +9,6 @@
     <color name="umBlueDark">#333333</color>
 
     <color name="black_overlay">#66000000</color>
+    <color name="glass_background_blue">#CC00274C</color>
+    <color name="glass_border_white">#26FFFFFF</color>
 </resources>

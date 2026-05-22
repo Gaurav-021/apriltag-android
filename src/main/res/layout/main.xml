@@ -1,34 +1,13 @@
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="fill_parent"
-    android:layout_height="fill_parent"
-    android:orientation="vertical">
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
-        <ImageView
-            android:layout_width="wrap_content"
-            android:layout_height="match_parent"
-            android:src="@mipmap/april_lab"
-            android:paddingLeft="10dp"
-            android:theme="@style/Widget.MyApp.Toolbar.Solid"/>
-        <android.support.v7.widget.Toolbar
-            xmlns:android="http://schemas.android.com/apk/res/android"
-            xmlns:app="http://schemas.android.com/apk/res-auto"
-            android:id="@+id/toolbar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="?attr/actionBarSize"
-            android:theme="@style/ThemeOverlay.MyApp.ActionBar"
-            app:popupTheme="@style/ThemeOverlay.AppCompat.Dark"
-            style="@style/Widget.MyApp.Toolbar.Solid"
-            android:elevation="4dp"/>
-    </LinearLayout>
-
+    <!-- Camera Preview Pane (Base layer, fills screen) -->
     <FrameLayout
         android:id="@+id/previewPane"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" >
+        android:layout_height="match_parent">
 
         <SurfaceView
             android:id="@+id/surfaceView"
@@ -41,34 +20,89 @@
             android:layout_height="match_parent"
             android:rotation="0" />
 
-        <RelativeLayout
-            android:layout_width="wrap_content"
-            android:layout_height="match_parent"
-            android:layout_gravity="bottom">
-
-            <TextView
-                android:id="@+id/tagFamily"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_alignParentStart="true"
-                android:layout_alignParentBottom="true"
-                android:layout_gravity="bottom"
-                android:text="tag36h11" />
-
-            <TextView
-                android:id="@+id/previewFpsTextView"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="N/A fps" />
-
-            <TextView
-                android:id="@+id/detectionFpsTextView"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_below="@id/previewFpsTextView"
-                android:text="N/A fps" />
-        </RelativeLayout>
-
     </FrameLayout>
 
-</LinearLayout>
+    <!-- Floating Glassmorphic Header (Top layer) -->
+    <LinearLayout
+        android:id="@+id/floatingHeaderContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_margin="16dp"
+        android:orientation="horizontal"
+        android:background="@drawable/floating_header_bg"
+        android:elevation="8dp"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:gravity="center_vertical">
+
+        <ImageView
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:src="@mipmap/april_lab"
+            android:contentDescription="U-M Lab Logo"
+            android:paddingRight="8dp"
+            android:layout_gravity="center_vertical"/>
+
+        <android.support.v7.widget.Toolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="?attr/actionBarSize"
+            android:theme="@style/ThemeOverlay.MyApp.ActionBar"
+            app:popupTheme="@style/ThemeOverlay.AppCompat.Dark"
+            android:background="@android:color/transparent" />
+    </LinearLayout>
+
+    <!-- Floating Diagnostics Card (Bottom-left layer) -->
+    <LinearLayout
+        android:id="@+id/diagnosticsCard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="16dp"
+        android:padding="12dp"
+        android:background="@drawable/floating_header_bg"
+        android:elevation="6dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tagFamily"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="tag36h11"
+            android:textColor="@color/umMaize"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/previewFpsTextView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="N/A fps"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/detectionFpsTextView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="N/A fps"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/poseTextView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Pose: N/A"
+            android:textColor="#00E5FF"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+</FrameLayout>
+

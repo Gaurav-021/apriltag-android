@@ -21,6 +21,13 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.TextView;
+import android.view.MotionEvent;
+import android.os.Build;
+import android.view.Window;
+import android.view.ViewGroup;
+import android.support.v4.view.ViewCompat;
+import android.support.v4.view.OnApplyWindowInsetsListener;
+import android.support.v4.view.WindowInsetsCompat;
 
 
 /**
@@ -32,6 +39,7 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
     private static final String TAG = "AprilTag";
     private DetectionThread mDetectionThread;
     private CameraPreviewThread mCameraPreviewThread;
+    private boolean m3dMode = false;
 
     private static final int MY_PERMISSIONS_REQUEST_CAMERA = 77;
     private int has_camera_permissions = 0;
@@ -48,15 +56,83 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
             Log.i(TAG, "available processors: " + nproc);
             PreferenceManager.getDefaultSharedPreferences(this).edit().putString("nthreads_value", Integer.toString(nproc)).apply();
         }
+
+        if (!sharedPreferences.contains("apriltag_size")) {
+            sharedPreferences.edit().putString("apriltag_size", "0.165").apply();
+        }
+
+        if (!sharedPreferences.contains("calibration_override")) {
+            sharedPreferences.edit().putBoolean("calibration_override", false).apply();
+        }
+        if (!sharedPreferences.contains("calibration_fx")) {
+            sharedPreferences.edit().putString("calibration_fx", "600.0").apply();
+        }
+        if (!sharedPreferences.contains("calibration_fy")) {
+            sharedPreferences.edit().putString("calibration_fy", "600.0").apply();
+        }
+        if (!sharedPreferences.contains("calibration_cx")) {
+            sharedPreferences.edit().putString("calibration_cx", "0.0").apply();
+        }
+        if (!sharedPreferences.contains("calibration_cy")) {
+            sharedPreferences.edit().putString("calibration_cy", "0.0").apply();
+        }
     }
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Enable edge-to-edge drawing on API 21+ devices
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            Window window = getWindow();
+            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS
+                    | WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            );
+            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            window.setStatusBarColor(Color.TRANSPARENT);
+            window.setNavigationBarColor(Color.TRANSPARENT);
+        }
+
         setContentView(R.layout.main);
 
         // Add toolbar/actionbar
         Toolbar myToolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(myToolbar);
+
+        // Adjust views for status/navigation bar insets dynamically
+        final View floatingHeader = findViewById(R.id.floatingHeaderContainer);
+        if (floatingHeader != null) {
+            ViewCompat.setOnApplyWindowInsetsListener(floatingHeader, new OnApplyWindowInsetsListener() {
+                @Override
+                public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
+                    ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) v.getLayoutParams();
+                    // Shift toolbar down by status bar inset
+                    lp.topMargin = insets.getSystemWindowInsetTop() + (int) (16 * getResources().getDisplayMetrics().density);
+                    lp.leftMargin = insets.getSystemWindowInsetLeft() + (int) (16 * getResources().getDisplayMetrics().density);
+                    lp.rightMargin = insets.getSystemWindowInsetRight() + (int) (16 * getResources().getDisplayMetrics().density);
+                    v.setLayoutParams(lp);
+                    return insets;
+                }
+            });
+        }
+
+        final View diagnosticsCard = findViewById(R.id.diagnosticsCard);
+        if (diagnosticsCard != null) {
+            ViewCompat.setOnApplyWindowInsetsListener(diagnosticsCard, new OnApplyWindowInsetsListener() {
+                @Override
+                public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
+                    ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) v.getLayoutParams();
+                    // Shift card up/in by navigation bar / system gesture insets
+                    lp.bottomMargin = insets.getSystemWindowInsetBottom() + (int) (16 * getResources().getDisplayMetrics().density);
+                    lp.leftMargin = insets.getSystemWindowInsetLeft() + (int) (16 * getResources().getDisplayMetrics().density);
+                    v.setLayoutParams(lp);
+                    return insets;
+                }
+            });
+        }
 
         // Make the screen stay awake
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -138,6 +214,11 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
         // DIAGNOSTICS
         findViewById(R.id.detectionFpsTextView).setVisibility(diagnosticsEnabled ? View.VISIBLE : View.INVISIBLE);
         findViewById(R.id.previewFpsTextView).setVisibility(diagnosticsEnabled ? View.VISIBLE : View.INVISIBLE);
+        TextView poseTextView = (TextView) findViewById(R.id.poseTextView);
+        if (poseTextView != null) {
+            poseTextView.setVisibility(diagnosticsEnabled ? View.VISIBLE : View.GONE);
+            poseTextView.setTypeface(poseTextView.getTypeface(), Typeface.BOLD);
+        }
         TextView tagFamilyText = (TextView) findViewById(R.id.tagFamily);
         stylizeText(tagFamilyText);
         tagFamilyText.setText("Tag Family: " + tagFamily.substring(3));
@@ -147,9 +228,41 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
         TextureView detectionSurface = (TextureView) findViewById(R.id.tagView);
         TextView detectionFpsTextView = (TextView) findViewById(R.id.detectionFpsTextView);
         stylizeText(detectionFpsTextView);
-        mDetectionThread = new DetectionThread(detectionSurface, detectionFpsTextView);
+        TextView poseTextVal = (TextView) findViewById(R.id.poseTextView);
+        mDetectionThread = new DetectionThread(detectionSurface, detectionFpsTextView, poseTextVal);
+        mDetectionThread.set3DMode(m3dMode);
         mDetectionThread.initialize();
         mDetectionThread.start();
+
+        detectionSurface.setOnTouchListener(new View.OnTouchListener() {
+            private float lastX;
+            private float lastY;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (!m3dMode) {
+                    return false;
+                }
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        lastX = event.getX();
+                        lastY = event.getY();
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        float dx = event.getX() - lastX;
+                        float dy = event.getY() - lastY;
+                        lastX = event.getX();
+                        lastY = event.getY();
+
+                        if (mDetectionThread != null) {
+                            float scale = 0.005f;
+                            mDetectionThread.updateVirtualCameraOrbit(-dx * scale, -dy * scale);
+                        }
+                        return true;
+                }
+                return false;
+            }
+        });
 
         // Start the camera preview on a separate thread
         SurfaceView previewSurface = (SurfaceView) findViewById(R.id.surfaceView);
@@ -161,39 +274,53 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
     }
 
     private void stylizeText(TextView textView) {
-        textView.setTextColor(Color.GREEN);
-        textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        if (textView.getId() == R.id.tagFamily) {
+            textView.setTextColor(ContextCompat.getColor(this, R.color.umMaize));
+            textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        } else {
+            textView.setTextColor(Color.WHITE);
+            textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        }
         textView.setTypeface(textView.getTypeface(), Typeface.BOLD);
     }
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.main_menu, menu);
+        MenuItem item = menu.findItem(R.id.toggle_3d);
+        if (item != null) {
+            item.setTitle(m3dMode ? R.string.toggle_2d : R.string.toggle_3d);
+        }
         return true;
     }
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
+        int id = item.getItemId();
 
-            case R.id.settings:
-                verifyPreferences();
-                Intent intent = new Intent();
-                intent.setClassName(this, "edu.umich.eecs.april.apriltag.SettingsActivity");
-                startActivity(intent);
-                return true;
+        if (id == R.id.toggle_3d) {
+            m3dMode = !m3dMode;
+            item.setTitle(m3dMode ? R.string.toggle_2d : R.string.toggle_3d);
+            if (mDetectionThread != null) {
+                mDetectionThread.set3DMode(m3dMode);
+            }
+            return true;
+        } else if (id == R.id.settings) {
+            verifyPreferences();
+            Intent intent = new Intent();
+            intent.setClassName(this, "edu.umich.eecs.april.apriltag.SettingsActivity");
+            startActivity(intent);
+            return true;
+        } else if (id == R.id.reset) {
+            // Reset all shared preferences to default values
+            PreferenceManager.getDefaultSharedPreferences(this).edit().clear().commit();
 
-            case R.id.reset:
-                // Reset all shared preferences to default values
-                PreferenceManager.getDefaultSharedPreferences(this).edit().clear().commit();
+            // Restart the camera preview
+            onPause();
+            onResume();
 
-                // Restart the camera preview
-                onPause();
-                onResume();
-
-                return true;
-
-            default:
-                return super.onOptionsItemSelected(item);
+            return true;
+        } else {
+            return super.onOptionsItemSelected(item);
         }
     }
 

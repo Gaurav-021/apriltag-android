@@ -175,5 +175,9 @@ public class CameraPreviewThread extends Thread {
         camera.setDisplayOrientation(info.orientation % 360);
 
         camera.setParameters(parameters);
+
+        float fovH = parameters.getHorizontalViewAngle();
+        float fovV = parameters.getVerticalViewAngle();
+        mDetectionThread.setCameraFov(fovH, fovV);
     }
 }

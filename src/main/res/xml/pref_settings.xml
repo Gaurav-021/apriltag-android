@@ -49,6 +49,66 @@
             android:selectAllOnFocus="true"
             android:singleLine="true"
             android:title="@string/pref_title_nthreads"/>
+
+        <EditTextPreference
+            android:defaultValue="@string/pref_default_apriltag_size"
+            android:inputType="numberDecimal"
+            android:key="apriltag_size"
+            android:maxLines="1"
+            android:selectAllOnFocus="true"
+            android:singleLine="true"
+            android:title="@string/pref_title_apriltag_size"/>
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="Camera Calibration"
+        android:key="pref_cat_calibration">
+
+        <SwitchPreference
+            android:key="calibration_override"
+            android:title="@string/pref_title_calibration_override"
+            android:summary="@string/pref_summary_calibration_override"
+            android:defaultValue="false" />
+
+        <EditTextPreference
+            android:key="calibration_fx"
+            android:title="@string/pref_title_calibration_fx"
+            android:defaultValue="@string/pref_default_calibration_fx"
+            android:inputType="numberDecimal"
+            android:maxLines="1"
+            android:selectAllOnFocus="true"
+            android:singleLine="true"
+            android:dependency="calibration_override" />
+
+        <EditTextPreference
+            android:key="calibration_fy"
+            android:title="@string/pref_title_calibration_fy"
+            android:defaultValue="@string/pref_default_calibration_fy"
+            android:inputType="numberDecimal"
+            android:maxLines="1"
+            android:selectAllOnFocus="true"
+            android:singleLine="true"
+            android:dependency="calibration_override" />
+
+        <EditTextPreference
+            android:key="calibration_cx"
+            android:title="@string/pref_title_calibration_cx"
+            android:defaultValue="@string/pref_default_calibration_cx"
+            android:inputType="numberDecimal"
+            android:maxLines="1"
+            android:selectAllOnFocus="true"
+            android:singleLine="true"
+            android:dependency="calibration_override" />
+
+        <EditTextPreference
+            android:key="calibration_cy"
+            android:title="@string/pref_title_calibration_cy"
+            android:defaultValue="@string/pref_default_calibration_cy"
+            android:inputType="numberDecimal"
+            android:maxLines="1"
+            android:selectAllOnFocus="true"
+            android:singleLine="true"
+            android:dependency="calibration_override" />
     </PreferenceCategory>
 
     <PreferenceCategory
