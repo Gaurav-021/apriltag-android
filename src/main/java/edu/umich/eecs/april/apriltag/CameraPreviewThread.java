@@ -33,8 +33,28 @@ public class CameraPreviewThread extends Thread {
             try {
                 mCamera.setPreviewDisplay(holder);
 
-                // Set the preview callback to receive camera frames asynchronously
-                mCamera.setPreviewCallback((data, camera) -> {
+                // Set up buffer recycling callback listener
+                mDetectionThread.setBufferReleaseListener(data -> {
+                    if (mCamera != null) {
+                        try {
+                            mCamera.addCallbackBuffer(data);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error returning callback buffer: " + e.getMessage());
+                        }
+                    }
+                });
+
+                // Calculate required frame buffer size (NV21 format)
+                Camera.Size previewSize = mCamera.getParameters().getPreviewSize();
+                int bufferSize = previewSize.width * previewSize.height * 3 / 2;
+
+                // Pre-allocate 3 buffers and add them to the camera preview callback queue
+                for (int i = 0; i < 3; i++) {
+                    mCamera.addCallbackBuffer(new byte[bufferSize]);
+                }
+
+                // Register preview callback with recycled buffers
+                mCamera.setPreviewCallbackWithBuffer((data, camera) -> {
                     try {
                         mDetectionThread.enqueueCameraFrame(data, camera.getParameters().getPreviewSize());
                     } catch (InterruptedException e) {
@@ -71,10 +91,13 @@ public class CameraPreviewThread extends Thread {
 
     public void destroy() {
         mSurfaceHolder.removeCallback(mCallback);
-        mCamera.setPreviewCallback(null);
-        mCamera.stopPreview();
-        mCamera.release();
-        mCamera = null;
+        mDetectionThread.setBufferReleaseListener(null);
+        if (mCamera != null) {
+            mCamera.setPreviewCallbackWithBuffer(null);
+            mCamera.stopPreview();
+            mCamera.release();
+            mCamera = null;
+        }
     }
 
     private void previewFpsCallback() {

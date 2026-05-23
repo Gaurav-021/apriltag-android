@@ -61,6 +61,36 @@ public class DetectionThread extends Thread {
         if (mVirtualPitch < minPitch) mVirtualPitch = minPitch;
     }
 
+    public interface BufferReleaseListener {
+        void onBufferReleased(byte[] data);
+    }
+
+    private volatile BufferReleaseListener mBufferReleaseListener;
+
+    public void setBufferReleaseListener(BufferReleaseListener listener) {
+        mBufferReleaseListener = listener;
+    }
+
+    // Reusable drawing paints to avoid allocations inside rendering loops
+    private final Paint mFillPaint = new Paint();
+    private final Paint mBorderPaint = new Paint();
+    private final Paint mFacePaint = new Paint();
+    private final Paint mEdgePaint = new Paint();
+    private final Paint mAxisPaint = new Paint();
+    private final Paint mTargetIndicatorPaint = new Paint();
+    private final Paint mTextPaint = new Paint();
+    private final Paint mBgPaint = new Paint();
+    private final Paint mGridPaint = new Paint();
+    private final Paint mFrustumPaint = new Paint();
+    private final Paint mRayPaint = new Paint();
+    private final Paint mTagAxisPaint = new Paint();
+    private final Paint mReticlePaint = new Paint();
+    private final Paint mDotPaint = new Paint();
+    private final Paint mLinePaint = new Paint();
+
+    // Reusable path to avoid allocations inside rendering loops
+    private final Path mPath = new Path();
+
     public void setCameraFov(float fovH, float fovV) {
         if (fovH > 0 && fovV > 0) {
             mFovH = fovH;
@@ -295,6 +325,80 @@ public class DetectionThread extends Thread {
         mTextureView = textureView;
         mFpsTextView = fpsTextView;
         mPoseTextView = poseTextView;
+
+        // Initialize reusable Paints
+        mFillPaint.setColor(0xFF39FF14); // Neon green
+        mFillPaint.setAlpha(40);          // Light semi-transparent fill
+        mFillPaint.setStyle(Paint.Style.FILL);
+        mFillPaint.setAntiAlias(true);
+
+        mBorderPaint.setColor(0xFF39FF14); // Neon green
+        mBorderPaint.setStyle(Paint.Style.STROKE);
+        mBorderPaint.setStrokeWidth(8);
+        mBorderPaint.setAntiAlias(true);
+
+        mFacePaint.setColor(0x1F00E5FF); // Transparent neon cyan
+        mFacePaint.setStyle(Paint.Style.FILL);
+        mFacePaint.setAntiAlias(true);
+
+        mEdgePaint.setColor(0xFF00E5FF); // Neon cyan
+        mEdgePaint.setStyle(Paint.Style.STROKE);
+        mEdgePaint.setStrokeWidth(4);
+        mEdgePaint.setAntiAlias(true);
+
+        mAxisPaint.setStyle(Paint.Style.STROKE);
+        mAxisPaint.setStrokeWidth(6);
+        mAxisPaint.setAntiAlias(true);
+
+        mTargetIndicatorPaint.setColor(0xFF39FF14); // Neon green
+        mTargetIndicatorPaint.setStyle(Paint.Style.STROKE);
+        mTargetIndicatorPaint.setStrokeWidth(4);
+        mTargetIndicatorPaint.setAntiAlias(true);
+
+        mTextPaint.setColor(0xFF39FF14); // Neon green text
+        mTextPaint.setTextSize(40);
+        mTextPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        mTextPaint.setAntiAlias(true);
+
+        mBgPaint.setColor(0xFF000000); // Black
+        mBgPaint.setAlpha(180);         // Semi-transparent
+        mBgPaint.setStyle(Paint.Style.FILL);
+        mBgPaint.setAntiAlias(true);
+
+        mGridPaint.setColor(0x3F888888); // Semi-transparent grey
+        mGridPaint.setStyle(Paint.Style.STROKE);
+        mGridPaint.setStrokeWidth(2);
+        mGridPaint.setAntiAlias(true);
+
+        mFrustumPaint.setColor(0x7FCCCCCC);
+        mFrustumPaint.setStyle(Paint.Style.STROKE);
+        mFrustumPaint.setStrokeWidth(3);
+        mFrustumPaint.setAntiAlias(true);
+
+        mRayPaint.setColor(0xFFFFD700); // Golden yellow
+        mRayPaint.setStyle(Paint.Style.STROKE);
+        mRayPaint.setStrokeWidth(4);
+        mRayPaint.setAntiAlias(true);
+        mRayPaint.setPathEffect(new DashPathEffect(new float[]{15, 10}, 0));
+
+        mTagAxisPaint.setStyle(Paint.Style.STROKE);
+        mTagAxisPaint.setStrokeWidth(6);
+        mTagAxisPaint.setAntiAlias(true);
+
+        mReticlePaint.setColor(0xFF00E5FF); // Neon cyan
+        mReticlePaint.setStyle(Paint.Style.STROKE);
+        mReticlePaint.setStrokeWidth(4);
+        mReticlePaint.setAntiAlias(true);
+
+        mDotPaint.setColor(0xFF00E5FF);
+        mDotPaint.setStyle(Paint.Style.FILL);
+        mDotPaint.setAntiAlias(true);
+
+        mLinePaint.setColor(0xFF00E5FF); // Neon cyan
+        mLinePaint.setStyle(Paint.Style.STROKE);
+        mLinePaint.setStrokeWidth(6);
+        mLinePaint.setAntiAlias(true);
+        mLinePaint.setPathEffect(new DashPathEffect(new float[]{15, 10}, 0));
         mTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
             public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
@@ -375,18 +479,6 @@ public class DetectionThread extends Thread {
     private Pose3D renderDetection(ApriltagDetection detection, Canvas canvas) {
         if (mCameraSize == null) return null;
 
-        Paint fillPaint = new Paint();
-        fillPaint.setColor(0xFF39FF14); // Neon green
-        fillPaint.setAlpha(40);          // Light semi-transparent fill
-        fillPaint.setStyle(Paint.Style.FILL);
-        fillPaint.setAntiAlias(true);
-
-        Paint borderPaint = new Paint();
-        borderPaint.setColor(0xFF39FF14); // Neon green
-        borderPaint.setStyle(Paint.Style.STROKE);
-        borderPaint.setStrokeWidth(8);
-        borderPaint.setAntiAlias(true);
-
         float scaleDetectionX = (float)(canvas.getHeight()) / mCameraSize.width; // Converts detection x to render y
         float scaleDetectionY = (float)(canvas.getWidth()) / mCameraSize.height; // Converts detection y to render x (still needs offset)
 
@@ -405,19 +497,19 @@ public class DetectionThread extends Thread {
         }
 
         // Render filled outline of detections
-        Path fillPath = new Path();
+        mPath.reset();
         for (int i = 0; i < 4; i++) {
             if (i == 0) {
-                fillPath.moveTo(xPointsCanvas[i], yPointsCanvas[i]);
+                mPath.moveTo(xPointsCanvas[i], yPointsCanvas[i]);
             } else {
-                fillPath.lineTo(xPointsCanvas[i], yPointsCanvas[i]);
+                mPath.lineTo(xPointsCanvas[i], yPointsCanvas[i]);
             }
         }
-        fillPath.close();
-        canvas.drawPath(fillPath, fillPaint);
+        mPath.close();
+        canvas.drawPath(mPath, mFillPaint);
 
         // Render stroke outline of detections (uniform neon green border)
-        canvas.drawPath(fillPath, borderPaint);
+        canvas.drawPath(mPath, mBorderPaint);
 
         // Retrieve AprilTag Size from settings
         SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
@@ -499,80 +591,69 @@ public class DetectionThread extends Thread {
                 p4 != null && p5 != null && p6 != null && p7 != null) {
 
                 // Draw faces of the 3D box with light transparent fill
-                Paint facePaint = new Paint();
-                facePaint.setColor(0x1F00E5FF); // Transparent neon cyan
-                facePaint.setStyle(Paint.Style.FILL);
-                facePaint.setAntiAlias(true);
-
                 // Front face
-                Path frontPath = new Path();
-                frontPath.moveTo(p4[0], p4[1]);
-                frontPath.lineTo(p5[0], p5[1]);
-                frontPath.lineTo(p6[0], p6[1]);
-                frontPath.lineTo(p7[0], p7[1]);
-                frontPath.close();
-                canvas.drawPath(frontPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(p4[0], p4[1]);
+                mPath.lineTo(p5[0], p5[1]);
+                mPath.lineTo(p6[0], p6[1]);
+                mPath.lineTo(p7[0], p7[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
                 // Left face
-                Path leftPath = new Path();
-                leftPath.moveTo(p0[0], p0[1]);
-                leftPath.lineTo(p3[0], p3[1]);
-                leftPath.lineTo(p7[0], p7[1]);
-                leftPath.lineTo(p4[0], p4[1]);
-                leftPath.close();
-                canvas.drawPath(leftPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(p0[0], p0[1]);
+                mPath.lineTo(p3[0], p3[1]);
+                mPath.lineTo(p7[0], p7[1]);
+                mPath.lineTo(p4[0], p4[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
                 // Right face
-                Path rightPath = new Path();
-                rightPath.moveTo(p1[0], p1[1]);
-                rightPath.lineTo(p2[0], p2[1]);
-                rightPath.lineTo(p6[0], p6[1]);
-                rightPath.lineTo(p5[0], p5[1]);
-                rightPath.close();
-                canvas.drawPath(rightPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(p1[0], p1[1]);
+                mPath.lineTo(p2[0], p2[1]);
+                mPath.lineTo(p6[0], p6[1]);
+                mPath.lineTo(p5[0], p5[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
                 // Top face
-                Path topPath = new Path();
-                topPath.moveTo(p0[0], p0[1]);
-                topPath.lineTo(p1[0], p1[1]);
-                topPath.lineTo(p5[0], p5[1]);
-                topPath.lineTo(p4[0], p4[1]);
-                topPath.close();
-                canvas.drawPath(topPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(p0[0], p0[1]);
+                mPath.lineTo(p1[0], p1[1]);
+                mPath.lineTo(p5[0], p5[1]);
+                mPath.lineTo(p4[0], p4[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
                 // Bottom face
-                Path bottomPath = new Path();
-                bottomPath.moveTo(p3[0], p3[1]);
-                bottomPath.lineTo(p2[0], p2[1]);
-                bottomPath.lineTo(p6[0], p6[1]);
-                bottomPath.lineTo(p7[0], p7[1]);
-                bottomPath.close();
-                canvas.drawPath(bottomPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(p3[0], p3[1]);
+                mPath.lineTo(p2[0], p2[1]);
+                mPath.lineTo(p6[0], p6[1]);
+                mPath.lineTo(p7[0], p7[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
                 // Draw wireframe outlines (edges)
-                Paint edgePaint = new Paint();
-                edgePaint.setColor(0xFF00E5FF); // Neon cyan
-                edgePaint.setStyle(Paint.Style.STROKE);
-                edgePaint.setStrokeWidth(4);
-                edgePaint.setAntiAlias(true);
-
                 // Draw back face outline
-                canvas.drawLine(p0[0], p0[1], p1[0], p1[1], edgePaint);
-                canvas.drawLine(p1[0], p1[1], p2[0], p2[1], edgePaint);
-                canvas.drawLine(p2[0], p2[1], p3[0], p3[1], edgePaint);
-                canvas.drawLine(p3[0], p3[1], p0[0], p0[1], edgePaint);
+                canvas.drawLine(p0[0], p0[1], p1[0], p1[1], mEdgePaint);
+                canvas.drawLine(p1[0], p1[1], p2[0], p2[1], mEdgePaint);
+                canvas.drawLine(p2[0], p2[1], p3[0], p3[1], mEdgePaint);
+                canvas.drawLine(p3[0], p3[1], p0[0], p0[1], mEdgePaint);
 
                 // Draw front face outline
-                canvas.drawLine(p4[0], p4[1], p5[0], p5[1], edgePaint);
-                canvas.drawLine(p5[0], p5[1], p6[0], p6[1], edgePaint);
-                canvas.drawLine(p6[0], p6[1], p7[0], p7[1], edgePaint);
-                canvas.drawLine(p7[0], p7[1], p4[0], p4[1], edgePaint);
+                canvas.drawLine(p4[0], p4[1], p5[0], p5[1], mEdgePaint);
+                canvas.drawLine(p5[0], p5[1], p6[0], p6[1], mEdgePaint);
+                canvas.drawLine(p6[0], p6[1], p7[0], p7[1], mEdgePaint);
+                canvas.drawLine(p7[0], p7[1], p4[0], p4[1], mEdgePaint);
 
                 // Draw connecting edges
-                canvas.drawLine(p0[0], p0[1], p4[0], p4[1], edgePaint);
-                canvas.drawLine(p1[0], p1[1], p5[0], p5[1], edgePaint);
-                canvas.drawLine(p2[0], p2[1], p6[0], p6[1], edgePaint);
-                canvas.drawLine(p3[0], p3[1], p7[0], p7[1], edgePaint);
+                canvas.drawLine(p0[0], p0[1], p4[0], p4[1], mEdgePaint);
+                canvas.drawLine(p1[0], p1[1], p5[0], p5[1], mEdgePaint);
+                canvas.drawLine(p2[0], p2[1], p6[0], p6[1], mEdgePaint);
+                canvas.drawLine(p3[0], p3[1], p7[0], p7[1], mEdgePaint);
             }
 
             // Draw 3D coordinate axes
@@ -582,25 +663,20 @@ public class DetectionThread extends Thread {
             float[] zAxis = project3DPoint(0.0, 0.0, -tagSize, pose.r1, pose.r2, pose.r3, pose.t, fx, fy, cx, cy, scaleDetectionX, scaleDetectionY, canvas);
 
             if (origin != null) {
-                Paint axisPaint = new Paint();
-                axisPaint.setStyle(Paint.Style.STROKE);
-                axisPaint.setStrokeWidth(6);
-                axisPaint.setAntiAlias(true);
-
                 // X-axis: Red
                 if (xAxis != null) {
-                    axisPaint.setColor(0xFFFF3F3F);
-                    canvas.drawLine(origin[0], origin[1], xAxis[0], xAxis[1], axisPaint);
+                    mAxisPaint.setColor(0xFFFF3F3F);
+                    canvas.drawLine(origin[0], origin[1], xAxis[0], xAxis[1], mAxisPaint);
                 }
                 // Y-axis: Green
                 if (yAxis != null) {
-                    axisPaint.setColor(0xFF3FDF3F);
-                    canvas.drawLine(origin[0], origin[1], yAxis[0], yAxis[1], axisPaint);
+                    mAxisPaint.setColor(0xFF3FDF3F);
+                    canvas.drawLine(origin[0], origin[1], yAxis[0], yAxis[1], mAxisPaint);
                 }
                 // Z-axis: Blue
                 if (zAxis != null) {
-                    axisPaint.setColor(0xFF3F3FFF);
-                    canvas.drawLine(origin[0], origin[1], zAxis[0], zAxis[1], axisPaint);
+                    mAxisPaint.setColor(0xFF3F3FFF);
+                    canvas.drawLine(origin[0], origin[1], zAxis[0], zAxis[1], mAxisPaint);
                 }
             }
         }
@@ -609,29 +685,18 @@ public class DetectionThread extends Thread {
         float tagCenterX = (float) (canvas.getWidth() - detection.c[1] * scaleDetectionY);
         float tagCenterY = (float) (detection.c[0] * scaleDetectionX);
 
-        Paint targetIndicatorPaint = new Paint();
-        targetIndicatorPaint.setColor(0xFF39FF14); // Neon green
-        targetIndicatorPaint.setStyle(Paint.Style.STROKE);
-        targetIndicatorPaint.setStrokeWidth(4);
-        targetIndicatorPaint.setAntiAlias(true);
-
-        canvas.drawCircle(tagCenterX, tagCenterY, 12, targetIndicatorPaint);
-        canvas.drawLine(tagCenterX - 18, tagCenterY, tagCenterX + 18, tagCenterY, targetIndicatorPaint);
-        canvas.drawLine(tagCenterX, tagCenterY - 18, tagCenterX, tagCenterY + 18, targetIndicatorPaint);
+        canvas.drawCircle(tagCenterX, tagCenterY, 12, mTargetIndicatorPaint);
+        canvas.drawLine(tagCenterX - 18, tagCenterY, tagCenterX + 18, tagCenterY, mTargetIndicatorPaint);
+        canvas.drawLine(tagCenterX, tagCenterY - 18, tagCenterX, tagCenterY + 18, mTargetIndicatorPaint);
 
         // Render Tag ID badge
-        Paint textPaint = new Paint();
-        textPaint.setColor(0xFF39FF14); // Neon green text
-        textPaint.setTextSize(40);
-        textPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
-        textPaint.setAntiAlias(true);
-
+        mTextPaint.setTextSize(40);
         String badgeText = "ID: " + detection.id;
         if (pose != null) {
             badgeText = String.format("ID: %d (%.2fm)", detection.id, pose.distance);
         }
-        float textWidth = textPaint.measureText(badgeText);
-        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        float textWidth = mTextPaint.measureText(badgeText);
+        Paint.FontMetrics fm = mTextPaint.getFontMetrics();
         float textHeight = fm.descent - fm.ascent;
 
         // Find minimum and maximum Y to position the badge
@@ -659,19 +724,12 @@ public class DetectionThread extends Thread {
         float badgeLeft = tagCenterX - textWidth / 2f - paddingX;
         float badgeRight = tagCenterX + textWidth / 2f + paddingX;
 
-        Paint bgPaint = new Paint();
-        bgPaint.setColor(0xFF00E5FF); // Neon cyan background border for 3D estimation
-        bgPaint.setColor(0xFF000000); // Black
-        bgPaint.setAlpha(180);         // Semi-transparent
-        bgPaint.setStyle(Paint.Style.FILL);
-        bgPaint.setAntiAlias(true);
-
-        canvas.drawRoundRect(badgeLeft, badgeTop, badgeRight, badgeBottom, 12, 12, bgPaint);
+        canvas.drawRoundRect(badgeLeft, badgeTop, badgeRight, badgeBottom, 12, 12, mBgPaint);
 
         // Draw tag ID text centered
         float textX = tagCenterX - textWidth / 2f;
         float textY = badgeBottom - paddingY - fm.descent;
-        canvas.drawText(badgeText, textX, textY, textPaint);
+        canvas.drawText(badgeText, textX, textY, mTextPaint);
 
         return pose;
     }
@@ -771,24 +829,18 @@ public class DetectionThread extends Thread {
         mVirtualDistance = 0.9f * mVirtualDistance + 0.1f * (float) targetDistance;
 
         // 1. Draw floor grid (parallel to X-Z plane, Y = 0.5 meters)
-        Paint gridPaint = new Paint();
-        gridPaint.setColor(0x3F888888); // Semi-transparent grey
-        gridPaint.setStyle(Paint.Style.STROKE);
-        gridPaint.setStrokeWidth(2);
-        gridPaint.setAntiAlias(true);
-
         for (float xVal = -2.5f; xVal <= 2.5f; xVal += 0.5f) {
             float[] pStart = projectPhysical3DToVirtual(xVal, 0.5, -1.0, width, height);
             float[] pEnd = projectPhysical3DToVirtual(xVal, 0.5, 6.0, width, height);
             if (pStart != null && pEnd != null) {
-                canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], gridPaint);
+                canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
             }
         }
         for (float zVal = -1.0f; zVal <= 6.0f; zVal += 0.5f) {
             float[] pStart = projectPhysical3DToVirtual(-2.5, 0.5, zVal, width, height);
             float[] pEnd = projectPhysical3DToVirtual(2.5, 0.5, zVal, width, height);
             if (pStart != null && pEnd != null) {
-                canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], gridPaint);
+                canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
             }
         }
 
@@ -798,23 +850,18 @@ public class DetectionThread extends Thread {
         float[] yAxisCam = projectPhysical3DToVirtual(0, 0.25, 0, width, height);
         float[] zAxisCam = projectPhysical3DToVirtual(0, 0, 0.25, width, height);
 
-        Paint axisPaint = new Paint();
-        axisPaint.setStyle(Paint.Style.STROKE);
-        axisPaint.setStrokeWidth(6);
-        axisPaint.setAntiAlias(true);
-
         if (origin != null) {
             if (xAxisCam != null) {
-                axisPaint.setColor(0xFFFF3F3F);
-                canvas.drawLine(origin[0], origin[1], xAxisCam[0], xAxisCam[1], axisPaint);
+                mAxisPaint.setColor(0xFFFF3F3F);
+                canvas.drawLine(origin[0], origin[1], xAxisCam[0], xAxisCam[1], mAxisPaint);
             }
             if (yAxisCam != null) {
-                axisPaint.setColor(0xFF3FDF3F);
-                canvas.drawLine(origin[0], origin[1], yAxisCam[0], yAxisCam[1], axisPaint);
+                mAxisPaint.setColor(0xFF3FDF3F);
+                canvas.drawLine(origin[0], origin[1], yAxisCam[0], yAxisCam[1], mAxisPaint);
             }
             if (zAxisCam != null) {
-                axisPaint.setColor(0xFF3F3FFF);
-                canvas.drawLine(origin[0], origin[1], zAxisCam[0], zAxisCam[1], axisPaint);
+                mAxisPaint.setColor(0xFF3F3FFF);
+                canvas.drawLine(origin[0], origin[1], zAxisCam[0], zAxisCam[1], mAxisPaint);
             }
         }
 
@@ -824,34 +871,22 @@ public class DetectionThread extends Thread {
         float[] pf3 = projectPhysical3DToVirtual(-0.18, 0.13, 0.35, width, height);
 
         if (origin != null && pf0 != null && pf1 != null && pf2 != null && pf3 != null) {
-            Paint frustumPaint = new Paint();
-            frustumPaint.setColor(0x7FCCCCCC);
-            frustumPaint.setStyle(Paint.Style.STROKE);
-            frustumPaint.setStrokeWidth(3);
-            frustumPaint.setAntiAlias(true);
+            canvas.drawLine(origin[0], origin[1], pf0[0], pf0[1], mFrustumPaint);
+            canvas.drawLine(origin[0], origin[1], pf1[0], pf1[1], mFrustumPaint);
+            canvas.drawLine(origin[0], origin[1], pf2[0], pf2[1], mFrustumPaint);
+            canvas.drawLine(origin[0], origin[1], pf3[0], pf3[1], mFrustumPaint);
 
-            canvas.drawLine(origin[0], origin[1], pf0[0], pf0[1], frustumPaint);
-            canvas.drawLine(origin[0], origin[1], pf1[0], pf1[1], frustumPaint);
-            canvas.drawLine(origin[0], origin[1], pf2[0], pf2[1], frustumPaint);
-            canvas.drawLine(origin[0], origin[1], pf3[0], pf3[1], frustumPaint);
-
-            canvas.drawLine(pf0[0], pf0[1], pf1[0], pf1[1], frustumPaint);
-            canvas.drawLine(pf1[0], pf1[1], pf2[0], pf2[1], frustumPaint);
-            canvas.drawLine(pf2[0], pf2[1], pf3[0], pf3[1], frustumPaint);
-            canvas.drawLine(pf3[0], pf3[1], pf0[0], pf0[1], frustumPaint);
+            canvas.drawLine(pf0[0], pf0[1], pf1[0], pf1[1], mFrustumPaint);
+            canvas.drawLine(pf1[0], pf1[1], pf2[0], pf2[1], mFrustumPaint);
+            canvas.drawLine(pf2[0], pf2[1], pf3[0], pf3[1], mFrustumPaint);
+            canvas.drawLine(pf3[0], pf3[1], pf0[0], pf0[1], mFrustumPaint);
         }
 
         // 3. Draw detected tags (axes, wireframe cubes, tracking rays, labels)
         for (Pose3D pose : poses) {
             float[] tagCenter = projectPhysical3DToVirtual(pose.tx, pose.ty, pose.tz, width, height);
             if (origin != null && tagCenter != null) {
-                Paint rayPaint = new Paint();
-                rayPaint.setColor(0xFFFFD700); // Golden yellow tracking rays
-                rayPaint.setStyle(Paint.Style.STROKE);
-                rayPaint.setStrokeWidth(4);
-                rayPaint.setAntiAlias(true);
-                rayPaint.setPathEffect(new DashPathEffect(new float[]{15, 10}, 0));
-                canvas.drawLine(origin[0], origin[1], tagCenter[0], tagCenter[1], rayPaint);
+                canvas.drawLine(origin[0], origin[1], tagCenter[0], tagCenter[1], mRayPaint);
             }
 
             double L = tagSize;
@@ -860,22 +895,17 @@ public class DetectionThread extends Thread {
             float[] pzAxis = projectPhysical3DToVirtual(pose.tx + L * pose.r3[0], pose.ty + L * pose.r3[1], pose.tz + L * pose.r3[2], width, height);
 
             if (tagCenter != null) {
-                Paint tagAxisPaint = new Paint();
-                tagAxisPaint.setStyle(Paint.Style.STROKE);
-                tagAxisPaint.setStrokeWidth(6);
-                tagAxisPaint.setAntiAlias(true);
-
                 if (pxAxis != null) {
-                    tagAxisPaint.setColor(0xFFFF3F3F);
-                    canvas.drawLine(tagCenter[0], tagCenter[1], pxAxis[0], pxAxis[1], tagAxisPaint);
+                    mTagAxisPaint.setColor(0xFFFF3F3F);
+                    canvas.drawLine(tagCenter[0], tagCenter[1], pxAxis[0], pxAxis[1], mTagAxisPaint);
                 }
                 if (pyAxis != null) {
-                    tagAxisPaint.setColor(0xFF3FDF3F);
-                    canvas.drawLine(tagCenter[0], tagCenter[1], pyAxis[0], pyAxis[1], tagAxisPaint);
+                    mTagAxisPaint.setColor(0xFF3FDF3F);
+                    canvas.drawLine(tagCenter[0], tagCenter[1], pyAxis[0], pyAxis[1], mTagAxisPaint);
                 }
                 if (pzAxis != null) {
-                    tagAxisPaint.setColor(0xFF3F3FFF);
-                    canvas.drawLine(tagCenter[0], tagCenter[1], pzAxis[0], pzAxis[1], tagAxisPaint);
+                    mTagAxisPaint.setColor(0xFF3F3FFF);
+                    canvas.drawLine(tagCenter[0], tagCenter[1], pzAxis[0], pzAxis[1], mTagAxisPaint);
                 }
             }
 
@@ -892,84 +922,68 @@ public class DetectionThread extends Thread {
             if (c0 != null && c1 != null && c2 != null && c3 != null &&
                 c4 != null && c5 != null && c6 != null && c7 != null) {
 
-                Paint facePaint = new Paint();
-                facePaint.setColor(0x1F00E5FF);
-                facePaint.setStyle(Paint.Style.FILL);
-                facePaint.setAntiAlias(true);
+                mPath.reset();
+                mPath.moveTo(c4[0], c4[1]);
+                mPath.lineTo(c5[0], c5[1]);
+                mPath.lineTo(c6[0], c6[1]);
+                mPath.lineTo(c7[0], c7[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
-                Path fPath = new Path();
-                fPath.moveTo(c4[0], c4[1]);
-                fPath.lineTo(c5[0], c5[1]);
-                fPath.lineTo(c6[0], c6[1]);
-                fPath.lineTo(c7[0], c7[1]);
-                fPath.close();
-                canvas.drawPath(fPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(c0[0], c0[1]);
+                mPath.lineTo(c3[0], c3[1]);
+                mPath.lineTo(c7[0], c7[1]);
+                mPath.lineTo(c4[0], c4[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
-                Path lPath = new Path();
-                lPath.moveTo(c0[0], c0[1]);
-                lPath.lineTo(c3[0], c3[1]);
-                lPath.lineTo(c7[0], c7[1]);
-                lPath.lineTo(c4[0], c4[1]);
-                lPath.close();
-                canvas.drawPath(lPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(c1[0], c1[1]);
+                mPath.lineTo(c2[0], c2[1]);
+                mPath.lineTo(c6[0], c6[1]);
+                mPath.lineTo(c5[0], c5[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
-                Path rPath = new Path();
-                rPath.moveTo(c1[0], c1[1]);
-                rPath.lineTo(c2[0], c2[1]);
-                rPath.lineTo(c6[0], c6[1]);
-                rPath.lineTo(c5[0], c5[1]);
-                rPath.close();
-                canvas.drawPath(rPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(c0[0], c0[1]);
+                mPath.lineTo(c1[0], c1[1]);
+                mPath.lineTo(c5[0], c5[1]);
+                mPath.lineTo(c4[0], c4[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
-                Path tPath = new Path();
-                tPath.moveTo(c0[0], c0[1]);
-                tPath.lineTo(c1[0], c1[1]);
-                tPath.lineTo(c5[0], c5[1]);
-                tPath.lineTo(c4[0], c4[1]);
-                tPath.close();
-                canvas.drawPath(tPath, facePaint);
+                mPath.reset();
+                mPath.moveTo(c3[0], c3[1]);
+                mPath.lineTo(c2[0], c2[1]);
+                mPath.lineTo(c6[0], c6[1]);
+                mPath.lineTo(c7[0], c7[1]);
+                mPath.close();
+                canvas.drawPath(mPath, mFacePaint);
 
-                Path bPath = new Path();
-                bPath.moveTo(c3[0], c3[1]);
-                bPath.lineTo(c2[0], c2[1]);
-                bPath.lineTo(c6[0], c6[1]);
-                bPath.lineTo(c7[0], c7[1]);
-                bPath.close();
-                canvas.drawPath(bPath, facePaint);
+                canvas.drawLine(c0[0], c0[1], c1[0], c1[1], mEdgePaint);
+                canvas.drawLine(c1[0], c1[1], c2[0], c2[1], mEdgePaint);
+                canvas.drawLine(c2[0], c2[1], c3[0], c3[1], mEdgePaint);
+                canvas.drawLine(c3[0], c3[1], c0[0], c0[1], mEdgePaint);
 
-                Paint edgePaint = new Paint();
-                edgePaint.setColor(0xFF00E5FF);
-                edgePaint.setStyle(Paint.Style.STROKE);
-                edgePaint.setStrokeWidth(4);
-                edgePaint.setAntiAlias(true);
+                canvas.drawLine(c4[0], c4[1], c5[0], c5[1], mEdgePaint);
+                canvas.drawLine(c5[0], c5[1], c6[0], c6[1], mEdgePaint);
+                canvas.drawLine(c6[0], c6[1], c7[0], c7[1], mEdgePaint);
+                canvas.drawLine(c7[0], c7[1], c4[0], c4[1], mEdgePaint);
 
-                canvas.drawLine(c0[0], c0[1], c1[0], c1[1], edgePaint);
-                canvas.drawLine(c1[0], c1[1], c2[0], c2[1], edgePaint);
-                canvas.drawLine(c2[0], c2[1], c3[0], c3[1], edgePaint);
-                canvas.drawLine(c3[0], c3[1], c0[0], c0[1], edgePaint);
-
-                canvas.drawLine(c4[0], c4[1], c5[0], c5[1], edgePaint);
-                canvas.drawLine(c5[0], c5[1], c6[0], c6[1], edgePaint);
-                canvas.drawLine(c6[0], c6[1], c7[0], c7[1], edgePaint);
-                canvas.drawLine(c7[0], c7[1], c4[0], c4[1], edgePaint);
-
-                canvas.drawLine(c0[0], c0[1], c4[0], c4[1], edgePaint);
-                canvas.drawLine(c1[0], c1[1], c5[0], c5[1], edgePaint);
-                canvas.drawLine(c2[0], c2[1], c6[0], c6[1], edgePaint);
-                canvas.drawLine(c3[0], c3[1], c7[0], c7[1], edgePaint);
+                canvas.drawLine(c0[0], c0[1], c4[0], c4[1], mEdgePaint);
+                canvas.drawLine(c1[0], c1[1], c5[0], c5[1], mEdgePaint);
+                canvas.drawLine(c2[0], c2[1], c6[0], c6[1], mEdgePaint);
+                canvas.drawLine(c3[0], c3[1], c7[0], c7[1], mEdgePaint);
             }
 
             float[] badgePos = projectPhysical3DToVirtual(pose.tx, pose.ty - 0.15, pose.tz, width, height);
             if (badgePos != null) {
-                Paint textPaint = new Paint();
-                textPaint.setColor(0xFF39FF14);
-                textPaint.setTextSize(36);
-                textPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
-                textPaint.setAntiAlias(true);
-
+                mTextPaint.setTextSize(36);
                 String badgeText = String.format("ID: %d (%.2fm)", pose.id, pose.distance);
-                float textWidth = textPaint.measureText(badgeText);
-                Paint.FontMetrics fm = textPaint.getFontMetrics();
+                float textWidth = mTextPaint.measureText(badgeText);
+                Paint.FontMetrics fm = mTextPaint.getFontMetrics();
                 float textHeight = fm.descent - fm.ascent;
 
                 float paddingX = 12;
@@ -979,17 +993,11 @@ public class DetectionThread extends Thread {
                 float badgeTop = badgePos[1] - textHeight / 2f - paddingY;
                 float badgeBottom = badgePos[1] + textHeight / 2f + paddingY;
 
-                Paint bgPaint = new Paint();
-                bgPaint.setColor(0xFF000000);
-                bgPaint.setAlpha(180);
-                bgPaint.setStyle(Paint.Style.FILL);
-                bgPaint.setAntiAlias(true);
-
-                canvas.drawRoundRect(badgeLeft, badgeTop, badgeRight, badgeBottom, 8, 8, bgPaint);
+                canvas.drawRoundRect(badgeLeft, badgeTop, badgeRight, badgeBottom, 8, 8, mBgPaint);
 
                 float textX = badgePos[0] - textWidth / 2f;
                 float textY = badgeBottom - paddingY - fm.descent;
-                canvas.drawText(badgeText, textX, textY, textPaint);
+                canvas.drawText(badgeText, textX, textY, mTextPaint);
             }
         }
 
@@ -1071,37 +1079,7 @@ public class DetectionThread extends Thread {
                 }
             }
 
-            // Draw lock-on tracking line to the closest target
-            if (closestDetection != null) {
-                Paint linePaint = new Paint();
-                linePaint.setColor(0xFF00E5FF); // Neon cyan
-                linePaint.setStyle(Paint.Style.STROKE);
-                linePaint.setStrokeWidth(6);
-                linePaint.setAntiAlias(true);
-                linePaint.setPathEffect(new DashPathEffect(new float[]{15, 10}, 0));
-                canvas.drawLine(screenCenterX, screenCenterY, closestTagX, closestTagY, linePaint);
-            }
 
-            // Draw central target reticle (neon cyan)
-            Paint reticlePaint = new Paint();
-            reticlePaint.setColor(0xFF00E5FF); // Neon cyan
-            reticlePaint.setStyle(Paint.Style.STROKE);
-            reticlePaint.setStrokeWidth(4);
-            reticlePaint.setAntiAlias(true);
-
-            // Center dot
-            Paint dotPaint = new Paint();
-            dotPaint.setColor(0xFF00E5FF);
-            dotPaint.setStyle(Paint.Style.FILL);
-            dotPaint.setAntiAlias(true);
-            canvas.drawCircle(screenCenterX, screenCenterY, 4, dotPaint);
-
-            // Center inner/outer circles and crosshair ticks
-            canvas.drawCircle(screenCenterX, screenCenterY, 30, reticlePaint);
-            canvas.drawLine(screenCenterX - 45, screenCenterY, screenCenterX - 15, screenCenterY, reticlePaint);
-            canvas.drawLine(screenCenterX + 15, screenCenterY, screenCenterX + 45, screenCenterY, reticlePaint);
-            canvas.drawLine(screenCenterX, screenCenterY - 45, screenCenterX, screenCenterY - 15, reticlePaint);
-            canvas.drawLine(screenCenterX, screenCenterY + 15, screenCenterX, screenCenterY + 45, reticlePaint);
 
             // Update pose telemetry
             if (mPoseTextView != null) {
@@ -1157,6 +1135,11 @@ public class DetectionThread extends Thread {
 
             ArrayList<ApriltagDetection> detections = processCameraFrame(data, mCameraSize);
             renderDetections(detections);
+
+            BufferReleaseListener listener = mBufferReleaseListener;
+            if (listener != null) {
+                listener.onBufferReleased(data);
+            }
 
             mLastDetectLatency = (System.currentTimeMillis() - mLastEnqueueFrameTime);
         }
