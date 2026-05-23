@@ -61,6 +61,17 @@
     </PreferenceCategory>
 
     <PreferenceCategory
+        android:title="FRC Options"
+        android:key="pref_cat_frc">
+
+        <SwitchPreference
+            android:key="frc_mode"
+            android:title="Enable FRC Mode"
+            android:summary="Lock tag size to 6.5 inches (0.1651m) and compute robot pose on FRC field"
+            android:defaultValue="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
         android:title="Camera Calibration"
         android:key="pref_cat_calibration">
 

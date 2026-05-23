@@ -14,6 +14,7 @@ import android.preference.Preference;
 import android.preference.PreferenceActivity;
 import android.preference.PreferenceFragment;
 import android.preference.PreferenceManager;
+import android.preference.SwitchPreference;
 import android.util.Log;
 import android.view.MenuItem;
 
@@ -155,6 +156,21 @@ public class SettingsActivity extends PreferenceActivity {
             bindPreferenceSummaryToValue(findPreference("calibration_fy"));
             bindPreferenceSummaryToValue(findPreference("calibration_cx"));
             bindPreferenceSummaryToValue(findPreference("calibration_cy"));
+
+            // Dynamic FRC Size locking behavior
+            final Preference sizePref = findPreference("apriltag_size");
+            final SwitchPreference frcPref = (SwitchPreference) findPreference("frc_mode");
+            if (frcPref != null && sizePref != null) {
+                sizePref.setEnabled(!frcPref.isChecked());
+                frcPref.setOnPreferenceChangeListener(new Preference.OnPreferenceChangeListener() {
+                    @Override
+                    public boolean onPreferenceChange(Preference preference, Object newValue) {
+                        boolean enabled = (Boolean) newValue;
+                        sizePref.setEnabled(!enabled);
+                        return true;
+                    }
+                });
+            }
         }
 
         @Override

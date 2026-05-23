@@ -39,7 +39,7 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
     private static final String TAG = "AprilTag";
     private DetectionThread mDetectionThread;
     private CameraPreviewThread mCameraPreviewThread;
-    private boolean m3dMode = false;
+    private int mRenderMode = DetectionThread.MODE_2D;
 
     private static final int MY_PERMISSIONS_REQUEST_CAMERA = 77;
     private int has_camera_permissions = 0;
@@ -230,7 +230,7 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
         stylizeText(detectionFpsTextView);
         TextView poseTextVal = (TextView) findViewById(R.id.poseTextView);
         mDetectionThread = new DetectionThread(detectionSurface, detectionFpsTextView, poseTextVal);
-        mDetectionThread.set3DMode(m3dMode);
+        mDetectionThread.setRenderMode(mRenderMode);
         mDetectionThread.initialize();
         mDetectionThread.start();
 
@@ -240,7 +240,7 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
 
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                if (!m3dMode) {
+                if (mRenderMode != DetectionThread.MODE_3D) {
                     return false;
                 }
                 switch (event.getAction()) {
@@ -288,9 +288,19 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
         getMenuInflater().inflate(R.menu.main_menu, menu);
         MenuItem item = menu.findItem(R.id.toggle_3d);
         if (item != null) {
-            item.setTitle(m3dMode ? R.string.toggle_2d : R.string.toggle_3d);
+            updateMenuTitle(item);
         }
         return true;
+    }
+
+    private void updateMenuTitle(MenuItem item) {
+        if (mRenderMode == DetectionThread.MODE_2D) {
+            item.setTitle(R.string.toggle_2d);
+        } else if (mRenderMode == DetectionThread.MODE_3D) {
+            item.setTitle(R.string.toggle_3d);
+        } else {
+            item.setTitle(R.string.toggle_frc);
+        }
     }
 
     @Override
@@ -298,10 +308,26 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
         int id = item.getItemId();
 
         if (id == R.id.toggle_3d) {
-            m3dMode = !m3dMode;
-            item.setTitle(m3dMode ? R.string.toggle_2d : R.string.toggle_3d);
+            SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
+            boolean frcMode = sharedPreferences.getBoolean("frc_mode", false);
+            if (frcMode) {
+                if (mRenderMode == DetectionThread.MODE_2D) {
+                    mRenderMode = DetectionThread.MODE_3D;
+                } else if (mRenderMode == DetectionThread.MODE_3D) {
+                    mRenderMode = DetectionThread.MODE_FRC;
+                } else {
+                    mRenderMode = DetectionThread.MODE_2D;
+                }
+            } else {
+                if (mRenderMode == DetectionThread.MODE_2D) {
+                    mRenderMode = DetectionThread.MODE_3D;
+                } else {
+                    mRenderMode = DetectionThread.MODE_2D;
+                }
+            }
+            updateMenuTitle(item);
             if (mDetectionThread != null) {
-                mDetectionThread.set3DMode(m3dMode);
+                mDetectionThread.setRenderMode(mRenderMode);
             }
             return true;
         } else if (id == R.id.settings) {

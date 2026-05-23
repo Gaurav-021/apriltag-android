@@ -5,6 +5,7 @@
     <string name="settings">Settings</string>
     <string name="toggle_3d">3D Mode</string>
     <string name="toggle_2d">2D Mode</string>
+    <string name="toggle_frc">FRC View</string>
     <string name="about">About</string>
     <string name="screenshot">Screenshot</string>
     <string name="reset">Reset Settings</string>

@@ -14,6 +14,9 @@ import android.hardware.Camera;
 import android.util.Log;
 import android.view.TextureView;
 import android.widget.TextView;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.RectF;
 
 import java.util.ArrayList;
 import java.util.concurrent.BlockingQueue;
@@ -38,7 +41,12 @@ public class DetectionThread extends Thread {
     private float mFovH = 60.0f;
     private float mFovV = 45.0f;
 
-    private volatile boolean m3dMode = false;
+    public static final int MODE_2D = 0;
+    public static final int MODE_3D = 1;
+    public static final int MODE_FRC = 2;
+
+    private volatile int mRenderMode = MODE_2D;
+    private Bitmap mFrcFieldBitmap = null;
     private volatile float mVirtualYaw = -0.5f; // approx -30 degrees
     private volatile float mVirtualPitch = 0.4f; // approx 23 degrees
     private float mFocalX = 0.0f;
@@ -46,8 +54,8 @@ public class DetectionThread extends Thread {
     private float mFocalZ = 1.5f;
     private float mVirtualDistance = 2.0f;
 
-    public void set3DMode(boolean active) {
-        m3dMode = active;
+    public void setRenderMode(int mode) {
+        mRenderMode = mode;
     }
 
     public void updateVirtualCameraOrbit(float dYaw, float dPitch) {
@@ -300,6 +308,19 @@ public class DetectionThread extends Thread {
         return projectPhysical3DToVirtual(xCam, yCam, zCam, width, height);
     }
 
+    private float[] projectFieldPointToVirtual(double xField, double yField, double zField, int width, int height) {
+        return projectPhysical3DToVirtual(xField, -zField, yField, width, height);
+    }
+
+    private float[] projectCameraPointInFRC(double xCam, double yCam, double zCam, 
+                                            double cx_f, double cy_f, double cz_f,
+                                            double[][] R_f_c, int width, int height) {
+        double xField = R_f_c[0][0]*xCam + R_f_c[0][1]*yCam + R_f_c[0][2]*zCam + cx_f;
+        double yField = R_f_c[1][0]*xCam + R_f_c[1][1]*yCam + R_f_c[1][2]*zCam + cy_f;
+        double zField = R_f_c[2][0]*xCam + R_f_c[2][1]*yCam + R_f_c[2][2]*zCam + cz_f;
+        return projectFieldPointToVirtual(xField, yField, zField, width, height);
+    }
+
     private float[] project3DPoint(double xTag, double yTag, double zTag,
                                    double[] r1, double[] r2, double[] r3, double[] t,
                                    double fx, double fy, double cx, double cy,
@@ -425,6 +446,10 @@ public class DetectionThread extends Thread {
     public void destroy() {
         mCameraFrameQueue.clear();
         mCameraFrameQueue = null;
+        if (mFrcFieldBitmap != null) {
+            mFrcFieldBitmap.recycle();
+            mFrcFieldBitmap = null;
+        }
     }
 
     public void enqueueCameraFrame(byte[] data, Camera.Size cameraSize) throws InterruptedException {
@@ -513,12 +538,17 @@ public class DetectionThread extends Thread {
 
         // Retrieve AprilTag Size from settings
         SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
-        String sizeStr = sharedPreferences.getString("apriltag_size", "0.165");
         double tagSize = 0.165;
-        try {
-            tagSize = Double.parseDouble(sizeStr);
-        } catch (NumberFormatException e) {
-            Log.e(TAG, "Invalid apriltag_size setting, defaulting to 0.165");
+        boolean frcMode = sharedPreferences.getBoolean("frc_mode", false);
+        if (frcMode) {
+            tagSize = 0.1651;
+        } else {
+            String sizeStr = sharedPreferences.getString("apriltag_size", "0.165");
+            try {
+                tagSize = Double.parseDouble(sizeStr);
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "Invalid apriltag_size setting, defaulting to 0.165");
+            }
         }
 
         // Check for manual camera calibration settings override
@@ -734,6 +764,205 @@ public class DetectionThread extends Thread {
         return pose;
     }
 
+    private void renderFRCView(ArrayList<ApriltagDetection> detections, Canvas canvas) {
+        if (mFrcFieldBitmap == null) {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inScaled = false;
+            mFrcFieldBitmap = BitmapFactory.decodeResource(mTextureView.getContext().getResources(), R.drawable.frc_field_2026, options);
+        }
+
+        canvas.drawColor(0xFF1E1E1E); // RViz dark grey / dark field background
+
+        int viewWidth = canvas.getWidth();
+        int viewHeight = canvas.getHeight();
+        
+        float drawWidth = viewWidth;
+        float drawHeight = viewHeight;
+        float dx = 0;
+        float dy = 0;
+
+        if (mFrcFieldBitmap != null) {
+            int imgWidth = mFrcFieldBitmap.getWidth();
+            int imgHeight = mFrcFieldBitmap.getHeight();
+            float scale = Math.min((float) viewWidth / imgWidth, (float) viewHeight / imgHeight);
+            drawWidth = imgWidth * scale;
+            drawHeight = imgHeight * scale;
+            dx = (viewWidth - drawWidth) / 2f;
+            dy = (viewHeight - drawHeight) / 2f;
+
+            RectF destRect = new RectF(dx, dy, dx + drawWidth, dy + drawHeight);
+            canvas.drawBitmap(mFrcFieldBitmap, null, destRect, null);
+        }
+
+        SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
+        double tagSize = 0.1651; // Locked for FRC
+
+        boolean calOverride = sharedPreferences.getBoolean("calibration_override", false);
+        double cx = mCameraSize != null ? mCameraSize.width / 2.0 : viewWidth / 2.0;
+        double cy = mCameraSize != null ? mCameraSize.height / 2.0 : viewHeight / 2.0;
+        double fx, fy;
+
+        if (calOverride) {
+            double customFx = 600.0;
+            double customFy = 600.0;
+            double customCx = 0.0;
+            double customCy = 0.0;
+            try {
+                customFx = Double.parseDouble(sharedPreferences.getString("calibration_fx", "600.0"));
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "Invalid calibration_fx, using default 600.0");
+            }
+            try {
+                customFy = Double.parseDouble(sharedPreferences.getString("calibration_fy", "600.0"));
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "Invalid calibration_fy, using default 600.0");
+            }
+            try {
+                customCx = Double.parseDouble(sharedPreferences.getString("calibration_cx", "0.0"));
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "Invalid calibration_cx, using default 0.0");
+            }
+            try {
+                customCy = Double.parseDouble(sharedPreferences.getString("calibration_cy", "0.0"));
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "Invalid calibration_cy, using default 0.0");
+            }
+
+            fx = customFx;
+            fy = customFy;
+            if (customCx > 0.0) cx = customCx;
+            if (customCy > 0.0) cy = customCy;
+        } else {
+            fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
+            fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
+        }
+
+        Pose3D closestPose = null;
+        double minDistance = Double.MAX_VALUE;
+
+        for (ApriltagDetection detection : detections) {
+            Pose3D pose = estimatePose(detection, tagSize, fx, fy, cx, cy);
+            if (pose != null) {
+                if (pose.distance < minDistance) {
+                    minDistance = pose.distance;
+                    closestPose = pose;
+                }
+            }
+        }
+
+        FRCTagLayout.CameraPose cameraPose = null;
+        if (closestPose != null) {
+            cameraPose = FRCTagLayout.computeCameraPoseOnField(
+                    closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
+        }
+
+        // Draw camera estimated pose if available
+        if (cameraPose != null) {
+            double x_field = cameraPose.x;
+            double y_field = cameraPose.y;
+            double yaw_field = cameraPose.yaw; // in degrees
+
+            // Normalization equations
+            double normX = (x_field - (-8.259)) / 16.518;
+            double normY = (4.0215 - y_field) / 8.043;
+
+            // Constrain normX and normY to [0, 1] range to avoid drawing outside the field boundaries
+            normX = Math.max(0.0, Math.min(1.0, normX));
+            normY = Math.max(0.0, Math.min(1.0, normY));
+
+            double ratioX = (254.0 + normX * (3951.0 - 254.0)) / 4206.0;
+            double ratioY = (121.0 + normY * (1917.0 - 121.0)) / 2038.0;
+
+            float screenX = dx + (float) ratioX * drawWidth;
+            float screenY = dy + (float) ratioY * drawHeight;
+
+            // Draw FOV cone
+            Path conePath = new Path();
+            conePath.moveTo(screenX, screenY);
+            
+            float coneLength = 80f; // length of FOV cone on screen
+            double leftAngle = Math.toRadians(yaw_field + mFovH / 2.0);
+            double rightAngle = Math.toRadians(yaw_field - mFovH / 2.0);
+            
+            float leftX = screenX + (float) (coneLength * Math.cos(leftAngle));
+            float leftY = screenY - (float) (coneLength * Math.sin(leftAngle));
+            
+            float rightX = screenX + (float) (coneLength * Math.cos(rightAngle));
+            float rightY = screenY - (float) (coneLength * Math.sin(rightAngle));
+            
+            conePath.lineTo(leftX, leftY);
+            conePath.lineTo(rightX, rightY);
+            conePath.close();
+            
+            Paint conePaint = new Paint();
+            conePaint.setColor(0x40FF9800); // 25% transparent orange
+            conePaint.setStyle(Paint.Style.FILL);
+            conePaint.setAntiAlias(true);
+            canvas.drawPath(conePath, conePaint);
+            
+            Paint coneEdgePaint = new Paint();
+            coneEdgePaint.setColor(0x80FF9800); // 50% transparent orange edge
+            coneEdgePaint.setStyle(Paint.Style.STROKE);
+            coneEdgePaint.setStrokeWidth(2f);
+            coneEdgePaint.setAntiAlias(true);
+            canvas.drawPath(conePath, coneEdgePaint);
+
+            // Draw camera circle pointer
+            Paint camPaint = new Paint();
+            camPaint.setColor(0xFFFF5722); // Deep Orange
+            camPaint.setStyle(Paint.Style.FILL);
+            camPaint.setAntiAlias(true);
+            
+            Paint camStrokePaint = new Paint();
+            camStrokePaint.setColor(Color.WHITE);
+            camStrokePaint.setStyle(Paint.Style.STROKE);
+            camStrokePaint.setStrokeWidth(3f);
+            camStrokePaint.setAntiAlias(true);
+            
+            canvas.drawCircle(screenX, screenY, 15f, camPaint);
+            canvas.drawCircle(screenX, screenY, 15f, camStrokePaint);
+
+            // Draw line in the yaw direction
+            double yawRad = Math.toRadians(yaw_field);
+            float pointerLength = 40f;
+            float endX = screenX + (float) (pointerLength * Math.cos(yawRad));
+            float endY = screenY - (float) (pointerLength * Math.sin(yawRad));
+            
+            Paint linePaint = new Paint();
+            linePaint.setColor(0xFFFF9800); // Orange
+            linePaint.setStrokeWidth(5f);
+            linePaint.setAntiAlias(true);
+            canvas.drawLine(screenX, screenY, endX, endY, linePaint);
+        }
+
+        // Update telemetry text view
+        if (mPoseTextView != null) {
+            final String telemetry;
+            if (cameraPose != null) {
+                telemetry = String.format("Target ID: %d (FRC Field)\n" +
+                                "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                        closestPose.id, cameraPose.x, cameraPose.y, cameraPose.z,
+                        cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
+            } else if (closestPose != null) {
+                telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
+                                "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                        closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
+                        closestPose.roll, closestPose.pitch, closestPose.yaw);
+            } else {
+                telemetry = "No Target";
+            }
+
+            mPoseTextView.post(new Runnable() {
+                @Override
+                public void run() {
+                    mPoseTextView.setText(telemetry);
+                }
+            });
+        }
+    }
+
     private void render3DView(ArrayList<ApriltagDetection> detections, Canvas canvas) {
         canvas.drawColor(0xFF1E1E1E); // RViz dark grey
 
@@ -741,12 +970,17 @@ public class DetectionThread extends Thread {
         int height = canvas.getHeight();
 
         SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
-        String sizeStr = sharedPreferences.getString("apriltag_size", "0.165");
         double tagSize = 0.165;
-        try {
-            tagSize = Double.parseDouble(sizeStr);
-        } catch (NumberFormatException e) {
-            Log.e(TAG, "Invalid apriltag_size setting, defaulting to 0.165");
+        boolean frcMode = sharedPreferences.getBoolean("frc_mode", false);
+        if (frcMode) {
+            tagSize = 0.1651;
+        } else {
+            String sizeStr = sharedPreferences.getString("apriltag_size", "0.165");
+            try {
+                tagSize = Double.parseDouble(sizeStr);
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "Invalid apriltag_size setting, defaulting to 0.165");
+            }
         }
 
         boolean calOverride = sharedPreferences.getBoolean("calibration_override", false);
@@ -809,46 +1043,145 @@ public class DetectionThread extends Thread {
             }
         }
 
+        double camX_field = 0.0;
+        double camY_field = 0.0;
+        double camZ_field = 0.0;
+        double[][] R_f_c = null;
+        boolean cameraEstimated = false;
+
+        Pose3D closestPose = null;
+        if (validCount > 0) {
+            double minCamDist = Double.MAX_VALUE;
+            for (Pose3D pose : poses) {
+                if (pose.distance < minCamDist) {
+                    minCamDist = pose.distance;
+                    closestPose = pose;
+                }
+            }
+            if (frcMode && closestPose != null) {
+                FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
+                        closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
+                if (cameraPose != null) {
+                    camX_field = cameraPose.x;
+                    camY_field = cameraPose.y;
+                    camZ_field = cameraPose.z;
+                    cameraEstimated = true;
+
+                    // Reconstruct R_f_c rotation matrix
+                    double[][] T_field_tag = FRCTagLayout.TAG_TRANSFORMS[closestPose.id];
+                    R_f_c = new double[3][3];
+                    R_f_c[0][0] = T_field_tag[0][0]*closestPose.r1[0] + T_field_tag[0][1]*closestPose.r2[0] + T_field_tag[0][2]*closestPose.r3[0];
+                    R_f_c[0][1] = T_field_tag[0][0]*closestPose.r1[1] + T_field_tag[0][1]*closestPose.r2[1] + T_field_tag[0][2]*closestPose.r3[1];
+                    R_f_c[0][2] = T_field_tag[0][0]*closestPose.r1[2] + T_field_tag[0][1]*closestPose.r2[2] + T_field_tag[0][2]*closestPose.r3[2];
+
+                    R_f_c[1][0] = T_field_tag[1][0]*closestPose.r1[0] + T_field_tag[1][1]*closestPose.r2[0] + T_field_tag[1][2]*closestPose.r3[0];
+                    R_f_c[1][1] = T_field_tag[1][0]*closestPose.r1[1] + T_field_tag[1][1]*closestPose.r2[1] + T_field_tag[1][2]*closestPose.r3[1];
+                    R_f_c[1][2] = T_field_tag[1][0]*closestPose.r1[2] + T_field_tag[1][1]*closestPose.r2[2] + T_field_tag[1][2]*closestPose.r3[2];
+
+                    R_f_c[2][0] = T_field_tag[2][0]*closestPose.r1[0] + T_field_tag[2][1]*closestPose.r2[0] + T_field_tag[2][2]*closestPose.r3[0];
+                    R_f_c[2][1] = T_field_tag[2][0]*closestPose.r1[1] + T_field_tag[2][1]*closestPose.r2[1] + T_field_tag[2][2]*closestPose.r3[1];
+                    R_f_c[2][2] = T_field_tag[2][0]*closestPose.r1[2] + T_field_tag[2][1]*closestPose.r2[2] + T_field_tag[2][2]*closestPose.r3[2];
+                }
+            }
+        }
+
         double targetFocalX = 0.0;
         double targetFocalY = 0.0;
         double targetFocalZ = 1.5;
         double targetDistance = 2.0;
 
-        if (validCount > 0) {
-            targetFocalX = sumX / validCount;
-            targetFocalY = sumY / validCount;
-            targetFocalZ = sumZ / validCount;
-            double avgDistance = Math.sqrt(targetFocalX * targetFocalX + targetFocalY * targetFocalY + targetFocalZ * targetFocalZ);
-            targetDistance = Math.max(1.5, avgDistance + 1.0);
+        if (frcMode) {
+            if (cameraEstimated) {
+                targetFocalX = camX_field;
+                targetFocalY = -camZ_field;
+                targetFocalZ = camY_field;
+                targetDistance = 3.0;
+            } else {
+                targetFocalX = 0.0;
+                targetFocalY = 0.0;
+                targetFocalZ = 0.0;
+                targetDistance = 12.0;
+            }
+        } else {
+            if (validCount > 0) {
+                targetFocalX = sumX / validCount;
+                targetFocalY = sumY / validCount;
+                targetFocalZ = sumZ / validCount;
+                double avgDistance = Math.sqrt(targetFocalX * targetFocalX + targetFocalY * targetFocalY + targetFocalZ * targetFocalZ);
+                targetDistance = Math.max(1.5, avgDistance + 1.0);
+            }
         }
 
-        // Smoothly interpolate camera focus point and distance
         mFocalX = 0.9f * mFocalX + 0.1f * (float) targetFocalX;
         mFocalY = 0.9f * mFocalY + 0.1f * (float) targetFocalY;
         mFocalZ = 0.9f * mFocalZ + 0.1f * (float) targetFocalZ;
         mVirtualDistance = 0.9f * mVirtualDistance + 0.1f * (float) targetDistance;
 
-        // 1. Draw floor grid (parallel to X-Z plane, Y = 0.5 meters)
-        for (float xVal = -2.5f; xVal <= 2.5f; xVal += 0.5f) {
-            float[] pStart = projectPhysical3DToVirtual(xVal, 0.5, -1.0, width, height);
-            float[] pEnd = projectPhysical3DToVirtual(xVal, 0.5, 6.0, width, height);
-            if (pStart != null && pEnd != null) {
-                canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
+        if (frcMode) {
+            // Draw FRC floor grid (zField = 0)
+            for (double xVal = -8.5; xVal <= 8.5; xVal += 0.5) {
+                float[] pStart = projectFieldPointToVirtual(xVal, -4.25, 0.0, width, height);
+                float[] pEnd = projectFieldPointToVirtual(xVal, 4.25, 0.0, width, height);
+                if (pStart != null && pEnd != null) {
+                    canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
+                }
             }
-        }
-        for (float zVal = -1.0f; zVal <= 6.0f; zVal += 0.5f) {
-            float[] pStart = projectPhysical3DToVirtual(-2.5, 0.5, zVal, width, height);
-            float[] pEnd = projectPhysical3DToVirtual(2.5, 0.5, zVal, width, height);
-            if (pStart != null && pEnd != null) {
-                canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
+            for (double yVal = -4.25; yVal <= 4.25; yVal += 0.5) {
+                float[] pStart = projectFieldPointToVirtual(-8.5, yVal, 0.0, width, height);
+                float[] pEnd = projectFieldPointToVirtual(8.5, yVal, 0.0, width, height);
+                if (pStart != null && pEnd != null) {
+                    canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
+                }
+            }
+        } else {
+            // 1. Draw floor grid (parallel to X-Z plane, Y = 0.5 meters)
+            for (float xVal = -2.5f; xVal <= 2.5f; xVal += 0.5f) {
+                float[] pStart = projectPhysical3DToVirtual(xVal, 0.5, -1.0, width, height);
+                float[] pEnd = projectPhysical3DToVirtual(xVal, 0.5, 6.0, width, height);
+                if (pStart != null && pEnd != null) {
+                    canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
+                }
+            }
+            for (float zVal = -1.0f; zVal <= 6.0f; zVal += 0.5f) {
+                float[] pStart = projectPhysical3DToVirtual(-2.5, 0.5, zVal, width, height);
+                float[] pEnd = projectPhysical3DToVirtual(2.5, 0.5, zVal, width, height);
+                if (pStart != null && pEnd != null) {
+                    canvas.drawLine(pStart[0], pStart[1], pEnd[0], pEnd[1], mGridPaint);
+                }
             }
         }
 
-        // 2. Draw camera axes and frustum at the origin (0,0,0)
-        float[] origin = projectPhysical3DToVirtual(0, 0, 0, width, height);
-        float[] xAxisCam = projectPhysical3DToVirtual(0.25, 0, 0, width, height);
-        float[] yAxisCam = projectPhysical3DToVirtual(0, 0.25, 0, width, height);
-        float[] zAxisCam = projectPhysical3DToVirtual(0, 0, 0.25, width, height);
+        // 2. Draw camera axes and frustum
+        float[] origin = null;
+        float[] xAxisCam = null;
+        float[] yAxisCam = null;
+        float[] zAxisCam = null;
+        float[] pf0 = null;
+        float[] pf1 = null;
+        float[] pf2 = null;
+        float[] pf3 = null;
+
+        if (frcMode) {
+            if (cameraEstimated) {
+                origin = projectCameraPointInFRC(0, 0, 0, camX_field, camY_field, camZ_field, R_f_c, width, height);
+                xAxisCam = projectCameraPointInFRC(0.25, 0, 0, camX_field, camY_field, camZ_field, R_f_c, width, height);
+                yAxisCam = projectCameraPointInFRC(0, 0.25, 0, camX_field, camY_field, camZ_field, R_f_c, width, height);
+                zAxisCam = projectCameraPointInFRC(0, 0, 0.25, camX_field, camY_field, camZ_field, R_f_c, width, height);
+                pf0 = projectCameraPointInFRC(-0.18, -0.13, 0.35, camX_field, camY_field, camZ_field, R_f_c, width, height);
+                pf1 = projectCameraPointInFRC(0.18, -0.13, 0.35, camX_field, camY_field, camZ_field, R_f_c, width, height);
+                pf2 = projectCameraPointInFRC(0.18, 0.13, 0.35, camX_field, camY_field, camZ_field, R_f_c, width, height);
+                pf3 = projectCameraPointInFRC(-0.18, 0.13, 0.35, camX_field, camY_field, camZ_field, R_f_c, width, height);
+            }
+        } else {
+            origin = projectPhysical3DToVirtual(0, 0, 0, width, height);
+            xAxisCam = projectPhysical3DToVirtual(0.25, 0, 0, width, height);
+            yAxisCam = projectPhysical3DToVirtual(0, 0.25, 0, width, height);
+            zAxisCam = projectPhysical3DToVirtual(0, 0, 0.25, width, height);
+            pf0 = projectPhysical3DToVirtual(-0.18, -0.13, 0.35, width, height);
+            pf1 = projectPhysical3DToVirtual(0.18, -0.13, 0.35, width, height);
+            pf2 = projectPhysical3DToVirtual(0.18, 0.13, 0.35, width, height);
+            pf3 = projectPhysical3DToVirtual(-0.18, 0.13, 0.35, width, height);
+        }
 
         if (origin != null) {
             if (xAxisCam != null) {
@@ -865,11 +1198,6 @@ public class DetectionThread extends Thread {
             }
         }
 
-        float[] pf0 = projectPhysical3DToVirtual(-0.18, -0.13, 0.35, width, height);
-        float[] pf1 = projectPhysical3DToVirtual(0.18, -0.13, 0.35, width, height);
-        float[] pf2 = projectPhysical3DToVirtual(0.18, 0.13, 0.35, width, height);
-        float[] pf3 = projectPhysical3DToVirtual(-0.18, 0.13, 0.35, width, height);
-
         if (origin != null && pf0 != null && pf1 != null && pf2 != null && pf3 != null) {
             canvas.drawLine(origin[0], origin[1], pf0[0], pf0[1], mFrustumPaint);
             canvas.drawLine(origin[0], origin[1], pf1[0], pf1[1], mFrustumPaint);
@@ -882,142 +1210,232 @@ public class DetectionThread extends Thread {
             canvas.drawLine(pf3[0], pf3[1], pf0[0], pf0[1], mFrustumPaint);
         }
 
-        // 3. Draw detected tags (axes, wireframe cubes, tracking rays, labels)
-        for (Pose3D pose : poses) {
-            float[] tagCenter = projectPhysical3DToVirtual(pose.tx, pose.ty, pose.tz, width, height);
-            if (origin != null && tagCenter != null) {
-                canvas.drawLine(origin[0], origin[1], tagCenter[0], tagCenter[1], mRayPaint);
-            }
+        // 3. Draw tags
+        if (frcMode) {
+            double s2 = 0.1651 / 2.0;
+            for (int tagId = 1; tagId <= 32; tagId++) {
+                double[][] T_field_tag = FRCTagLayout.TAG_TRANSFORMS[tagId];
+                if (T_field_tag == null) continue;
 
-            double L = tagSize;
-            float[] pxAxis = projectPhysical3DToVirtual(pose.tx + L * pose.r1[0], pose.ty + L * pose.r1[1], pose.tz + L * pose.r1[2], width, height);
-            float[] pyAxis = projectPhysical3DToVirtual(pose.tx + L * pose.r2[0], pose.ty + L * pose.r2[1], pose.tz + L * pose.r2[2], width, height);
-            float[] pzAxis = projectPhysical3DToVirtual(pose.tx + L * pose.r3[0], pose.ty + L * pose.r3[1], pose.tz + L * pose.r3[2], width, height);
-
-            if (tagCenter != null) {
-                if (pxAxis != null) {
-                    mTagAxisPaint.setColor(0xFFFF3F3F);
-                    canvas.drawLine(tagCenter[0], tagCenter[1], pxAxis[0], pxAxis[1], mTagAxisPaint);
+                boolean isDetected = false;
+                for (Pose3D pose : poses) {
+                    if (pose.id == tagId) {
+                        isDetected = true;
+                        break;
+                    }
                 }
-                if (pyAxis != null) {
-                    mTagAxisPaint.setColor(0xFF3FDF3F);
-                    canvas.drawLine(tagCenter[0], tagCenter[1], pyAxis[0], pyAxis[1], mTagAxisPaint);
+
+                double[][] corners_tag = {
+                    {-s2, s2, 0.0},
+                    {s2, s2, 0.0},
+                    {s2, -s2, 0.0},
+                    {-s2, -s2, 0.0}
+                };
+
+                float[][] corners_proj = new float[4][];
+                boolean allCornersProjected = true;
+                for (int j = 0; j < 4; j++) {
+                    double x_f = T_field_tag[0][0]*corners_tag[j][0] + T_field_tag[0][1]*corners_tag[j][1] + T_field_tag[0][2]*corners_tag[j][2] + T_field_tag[0][3];
+                    double y_f = T_field_tag[1][0]*corners_tag[j][0] + T_field_tag[1][1]*corners_tag[j][1] + T_field_tag[1][2]*corners_tag[j][2] + T_field_tag[1][3];
+                    double z_f = T_field_tag[2][0]*corners_tag[j][0] + T_field_tag[2][1]*corners_tag[j][1] + T_field_tag[2][2]*corners_tag[j][2] + T_field_tag[2][3];
+                    corners_proj[j] = projectFieldPointToVirtual(x_f, y_f, z_f, width, height);
+                    if (corners_proj[j] == null) {
+                        allCornersProjected = false;
+                        break;
+                    }
                 }
-                if (pzAxis != null) {
-                    mTagAxisPaint.setColor(0xFF3F3FFF);
-                    canvas.drawLine(tagCenter[0], tagCenter[1], pzAxis[0], pzAxis[1], mTagAxisPaint);
+
+                double tagX_f = T_field_tag[0][3];
+                double tagY_f = T_field_tag[1][3];
+                double tagZ_f = T_field_tag[2][3];
+                float[] tagCenterProj = projectFieldPointToVirtual(tagX_f, tagY_f, tagZ_f, width, height);
+
+                if (isDetected && origin != null && tagCenterProj != null) {
+                    canvas.drawLine(origin[0], origin[1], tagCenterProj[0], tagCenterProj[1], mRayPaint);
+                }
+
+                if (allCornersProjected) {
+                    Paint fillPaintToUse = mFacePaint;
+                    Paint borderPaintToUse = mEdgePaint;
+                    if (isDetected) {
+                        borderPaintToUse = mTagAxisPaint;
+                    } else {
+                        borderPaintToUse = mGridPaint;
+                    }
+
+                    mPath.reset();
+                    mPath.moveTo(corners_proj[0][0], corners_proj[0][1]);
+                    mPath.lineTo(corners_proj[1][0], corners_proj[1][1]);
+                    mPath.lineTo(corners_proj[2][0], corners_proj[2][1]);
+                    mPath.lineTo(corners_proj[3][0], corners_proj[3][1]);
+                    mPath.close();
+
+                    canvas.drawPath(mPath, fillPaintToUse);
+                    canvas.drawPath(mPath, borderPaintToUse);
+                }
+
+                if (tagCenterProj != null) {
+                    mTextPaint.setTextSize(24);
+                    if (isDetected) {
+                        mTextPaint.setColor(0xFF39FF14);
+                    } else {
+                        mTextPaint.setColor(0xFFCCCCCC);
+                    }
+                    String idStr = String.valueOf(tagId);
+                    float textWidth = mTextPaint.measureText(idStr);
+                    canvas.drawText(idStr, tagCenterProj[0] - textWidth/2f, tagCenterProj[1] + 8, mTextPaint);
                 }
             }
+        } else {
+            // Draw detected tags (axes, wireframe cubes, tracking rays, labels)
+            for (Pose3D pose : poses) {
+                float[] tagCenter = projectPhysical3DToVirtual(pose.tx, pose.ty, pose.tz, width, height);
+                if (origin != null && tagCenter != null) {
+                    canvas.drawLine(origin[0], origin[1], tagCenter[0], tagCenter[1], mRayPaint);
+                }
 
-            double s2 = tagSize / 2.0;
-            float[] c0 = projectTagSpacePointToVirtual(-s2, s2, 0.0, pose, width, height);
-            float[] c1 = projectTagSpacePointToVirtual(s2, s2, 0.0, pose, width, height);
-            float[] c2 = projectTagSpacePointToVirtual(s2, -s2, 0.0, pose, width, height);
-            float[] c3 = projectTagSpacePointToVirtual(-s2, -s2, 0.0, pose, width, height);
-            float[] c4 = projectTagSpacePointToVirtual(-s2, s2, -tagSize, pose, width, height);
-            float[] c5 = projectTagSpacePointToVirtual(s2, s2, -tagSize, pose, width, height);
-            float[] c6 = projectTagSpacePointToVirtual(s2, -s2, -tagSize, pose, width, height);
-            float[] c7 = projectTagSpacePointToVirtual(-s2, -s2, -tagSize, pose, width, height);
+                double L = tagSize;
+                float[] pxAxis = projectPhysical3DToVirtual(pose.tx + L * pose.r1[0], pose.ty + L * pose.r1[1], pose.tz + L * pose.r1[2], width, height);
+                float[] pyAxis = projectPhysical3DToVirtual(pose.tx + L * pose.r2[0], pose.ty + L * pose.r2[1], pose.tz + L * pose.r2[2], width, height);
+                float[] pzAxis = projectPhysical3DToVirtual(pose.tx + L * pose.r3[0], pose.ty + L * pose.r3[1], pose.tz + L * pose.r3[2], width, height);
 
-            if (c0 != null && c1 != null && c2 != null && c3 != null &&
-                c4 != null && c5 != null && c6 != null && c7 != null) {
+                if (tagCenter != null) {
+                    if (pxAxis != null) {
+                        mTagAxisPaint.setColor(0xFFFF3F3F);
+                        canvas.drawLine(tagCenter[0], tagCenter[1], pxAxis[0], pxAxis[1], mTagAxisPaint);
+                    }
+                    if (pyAxis != null) {
+                        mTagAxisPaint.setColor(0xFF3FDF3F);
+                        canvas.drawLine(tagCenter[0], tagCenter[1], pyAxis[0], pyAxis[1], mTagAxisPaint);
+                    }
+                    if (pzAxis != null) {
+                        mTagAxisPaint.setColor(0xFF3F3FFF);
+                        canvas.drawLine(tagCenter[0], tagCenter[1], pzAxis[0], pzAxis[1], mTagAxisPaint);
+                    }
+                }
 
-                mPath.reset();
-                mPath.moveTo(c4[0], c4[1]);
-                mPath.lineTo(c5[0], c5[1]);
-                mPath.lineTo(c6[0], c6[1]);
-                mPath.lineTo(c7[0], c7[1]);
-                mPath.close();
-                canvas.drawPath(mPath, mFacePaint);
+                double s2 = tagSize / 2.0;
+                float[] c0 = projectTagSpacePointToVirtual(-s2, s2, 0.0, pose, width, height);
+                float[] c1 = projectTagSpacePointToVirtual(s2, s2, 0.0, pose, width, height);
+                float[] c2 = projectTagSpacePointToVirtual(s2, -s2, 0.0, pose, width, height);
+                float[] c3 = projectTagSpacePointToVirtual(-s2, -s2, 0.0, pose, width, height);
+                float[] c4 = projectTagSpacePointToVirtual(-s2, s2, -tagSize, pose, width, height);
+                float[] c5 = projectTagSpacePointToVirtual(s2, s2, -tagSize, pose, width, height);
+                float[] c6 = projectTagSpacePointToVirtual(s2, -s2, -tagSize, pose, width, height);
+                float[] c7 = projectTagSpacePointToVirtual(-s2, -s2, -tagSize, pose, width, height);
 
-                mPath.reset();
-                mPath.moveTo(c0[0], c0[1]);
-                mPath.lineTo(c3[0], c3[1]);
-                mPath.lineTo(c7[0], c7[1]);
-                mPath.lineTo(c4[0], c4[1]);
-                mPath.close();
-                canvas.drawPath(mPath, mFacePaint);
+                if (c0 != null && c1 != null && c2 != null && c3 != null &&
+                    c4 != null && c5 != null && c6 != null && c7 != null) {
 
-                mPath.reset();
-                mPath.moveTo(c1[0], c1[1]);
-                mPath.lineTo(c2[0], c2[1]);
-                mPath.lineTo(c6[0], c6[1]);
-                mPath.lineTo(c5[0], c5[1]);
-                mPath.close();
-                canvas.drawPath(mPath, mFacePaint);
+                    mPath.reset();
+                    mPath.moveTo(c4[0], c4[1]);
+                    mPath.lineTo(c5[0], c5[1]);
+                    mPath.lineTo(c6[0], c6[1]);
+                    mPath.lineTo(c7[0], c7[1]);
+                    mPath.close();
+                    canvas.drawPath(mPath, mFacePaint);
 
-                mPath.reset();
-                mPath.moveTo(c0[0], c0[1]);
-                mPath.lineTo(c1[0], c1[1]);
-                mPath.lineTo(c5[0], c5[1]);
-                mPath.lineTo(c4[0], c4[1]);
-                mPath.close();
-                canvas.drawPath(mPath, mFacePaint);
+                    mPath.reset();
+                    mPath.moveTo(c0[0], c0[1]);
+                    mPath.lineTo(c3[0], c3[1]);
+                    mPath.lineTo(c7[0], c7[1]);
+                    mPath.lineTo(c4[0], c4[1]);
+                    mPath.close();
+                    canvas.drawPath(mPath, mFacePaint);
 
-                mPath.reset();
-                mPath.moveTo(c3[0], c3[1]);
-                mPath.lineTo(c2[0], c2[1]);
-                mPath.lineTo(c6[0], c6[1]);
-                mPath.lineTo(c7[0], c7[1]);
-                mPath.close();
-                canvas.drawPath(mPath, mFacePaint);
+                    mPath.reset();
+                    mPath.moveTo(c1[0], c1[1]);
+                    mPath.lineTo(c2[0], c2[1]);
+                    mPath.lineTo(c6[0], c6[1]);
+                    mPath.lineTo(c5[0], c5[1]);
+                    mPath.close();
+                    canvas.drawPath(mPath, mFacePaint);
 
-                canvas.drawLine(c0[0], c0[1], c1[0], c1[1], mEdgePaint);
-                canvas.drawLine(c1[0], c1[1], c2[0], c2[1], mEdgePaint);
-                canvas.drawLine(c2[0], c2[1], c3[0], c3[1], mEdgePaint);
-                canvas.drawLine(c3[0], c3[1], c0[0], c0[1], mEdgePaint);
+                    mPath.reset();
+                    mPath.moveTo(c0[0], c0[1]);
+                    mPath.lineTo(c1[0], c1[1]);
+                    mPath.lineTo(c5[0], c5[1]);
+                    mPath.lineTo(c4[0], c4[1]);
+                    mPath.close();
+                    canvas.drawPath(mPath, mFacePaint);
 
-                canvas.drawLine(c4[0], c4[1], c5[0], c5[1], mEdgePaint);
-                canvas.drawLine(c5[0], c5[1], c6[0], c6[1], mEdgePaint);
-                canvas.drawLine(c6[0], c6[1], c7[0], c7[1], mEdgePaint);
-                canvas.drawLine(c7[0], c7[1], c4[0], c4[1], mEdgePaint);
+                    mPath.reset();
+                    mPath.moveTo(c3[0], c3[1]);
+                    mPath.lineTo(c2[0], c2[1]);
+                    mPath.lineTo(c6[0], c6[1]);
+                    mPath.lineTo(c7[0], c7[1]);
+                    mPath.close();
+                    canvas.drawPath(mPath, mFacePaint);
 
-                canvas.drawLine(c0[0], c0[1], c4[0], c4[1], mEdgePaint);
-                canvas.drawLine(c1[0], c1[1], c5[0], c5[1], mEdgePaint);
-                canvas.drawLine(c2[0], c2[1], c6[0], c6[1], mEdgePaint);
-                canvas.drawLine(c3[0], c3[1], c7[0], c7[1], mEdgePaint);
-            }
+                    canvas.drawLine(c0[0], c0[1], c1[0], c1[1], mEdgePaint);
+                    canvas.drawLine(c1[0], c1[1], c2[0], c2[1], mEdgePaint);
+                    canvas.drawLine(c2[0], c2[1], c3[0], c3[1], mEdgePaint);
+                    canvas.drawLine(c3[0], c3[1], c0[0], c0[1], mEdgePaint);
 
-            float[] badgePos = projectPhysical3DToVirtual(pose.tx, pose.ty - 0.15, pose.tz, width, height);
-            if (badgePos != null) {
-                mTextPaint.setTextSize(36);
-                String badgeText = String.format("ID: %d (%.2fm)", pose.id, pose.distance);
-                float textWidth = mTextPaint.measureText(badgeText);
-                Paint.FontMetrics fm = mTextPaint.getFontMetrics();
-                float textHeight = fm.descent - fm.ascent;
+                    canvas.drawLine(c4[0], c4[1], c5[0], c5[1], mEdgePaint);
+                    canvas.drawLine(c5[0], c5[1], c6[0], c6[1], mEdgePaint);
+                    canvas.drawLine(c6[0], c6[1], c7[0], c7[1], mEdgePaint);
+                    canvas.drawLine(c7[0], c7[1], c4[0], c4[1], mEdgePaint);
 
-                float paddingX = 12;
-                float paddingY = 6;
-                float badgeLeft = badgePos[0] - textWidth / 2f - paddingX;
-                float badgeRight = badgePos[0] + textWidth / 2f + paddingX;
-                float badgeTop = badgePos[1] - textHeight / 2f - paddingY;
-                float badgeBottom = badgePos[1] + textHeight / 2f + paddingY;
+                    canvas.drawLine(c0[0], c0[1], c4[0], c4[1], mEdgePaint);
+                    canvas.drawLine(c1[0], c1[1], c5[0], c5[1], mEdgePaint);
+                    canvas.drawLine(c2[0], c2[1], c6[0], c6[1], mEdgePaint);
+                    canvas.drawLine(c3[0], c3[1], c7[0], c7[1], mEdgePaint);
+                }
 
-                canvas.drawRoundRect(badgeLeft, badgeTop, badgeRight, badgeBottom, 8, 8, mBgPaint);
+                float[] badgePos = projectPhysical3DToVirtual(pose.tx, pose.ty - 0.15, pose.tz, width, height);
+                if (badgePos != null) {
+                    mTextPaint.setTextSize(36);
+                    String badgeText = String.format("ID: %d (%.2fm)", pose.id, pose.distance);
+                    float textWidth = mTextPaint.measureText(badgeText);
+                    Paint.FontMetrics fm = mTextPaint.getFontMetrics();
+                    float textHeight = fm.descent - fm.ascent;
 
-                float textX = badgePos[0] - textWidth / 2f;
-                float textY = badgeBottom - paddingY - fm.descent;
-                canvas.drawText(badgeText, textX, textY, mTextPaint);
+                    float paddingX = 12;
+                    float paddingY = 6;
+                    float badgeLeft = badgePos[0] - textWidth / 2f - paddingX;
+                    float badgeRight = badgePos[0] + textWidth / 2f + paddingX;
+                    float badgeTop = badgePos[1] - textHeight / 2f - paddingY;
+                    float badgeBottom = badgePos[1] + textHeight / 2f + paddingY;
+
+                    canvas.drawRoundRect(badgeLeft, badgeTop, badgeRight, badgeBottom, 8, 8, mBgPaint);
+
+                    float textX = badgePos[0] - textWidth / 2f;
+                    float textY = badgeBottom - paddingY - fm.descent;
+                    canvas.drawText(badgeText, textX, textY, mTextPaint);
+                }
             }
         }
 
         // 4. Update diagnostics card telemetry
-        Pose3D closestPose = null;
-        double minDistance = Double.MAX_VALUE;
-        for (Pose3D p : poses) {
-            if (p.distance < minDistance) {
-                minDistance = p.distance;
-                closestPose = p;
-            }
-        }
-
         if (mPoseTextView != null) {
             if (closestPose != null) {
-                final String telemetry = String.format("Target ID: %d\n" +
-                                "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
-                                "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                        closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
-                        closestPose.roll, closestPose.pitch, closestPose.yaw);
+                final String telemetry;
+                SharedPreferences sharedPrefs = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
+                boolean frcModeVal = sharedPrefs.getBoolean("frc_mode", false);
+                if (frcModeVal) {
+                    FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
+                            closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
+                    if (cameraPose != null) {
+                        telemetry = String.format("Target ID: %d (FRC Field)\n" +
+                                        "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                        "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                                closestPose.id, cameraPose.x, cameraPose.y, cameraPose.z,
+                                cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
+                    } else {
+                        telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
+                                        "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                        "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                                closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
+                                closestPose.roll, closestPose.pitch, closestPose.yaw);
+                    }
+                } else {
+                    telemetry = String.format("Target ID: %d\n" +
+                                    "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                    "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                            closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
+                            closestPose.roll, closestPose.pitch, closestPose.yaw);
+                }
                 mPoseTextView.post(new Runnable() {
                     @Override
                     public void run() {
@@ -1039,8 +1457,11 @@ public class DetectionThread extends Thread {
         Canvas canvas = mTextureView.lockCanvas();
         if (canvas == null) return;
         try {
-            if (m3dMode) {
+            if (mRenderMode == MODE_3D) {
                 render3DView(detections, canvas);
+                return;
+            } else if (mRenderMode == MODE_FRC) {
+                renderFRCView(detections, canvas);
                 return;
             }
 
@@ -1084,11 +1505,32 @@ public class DetectionThread extends Thread {
             // Update pose telemetry
             if (mPoseTextView != null) {
                 if (closestPose != null) {
-                    final String telemetry = String.format("Target ID: %d\n" +
-                                    "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
-                                    "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                            closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
-                            closestPose.roll, closestPose.pitch, closestPose.yaw);
+                    final String telemetry;
+                    SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
+                    boolean frcModeVal = sharedPreferences.getBoolean("frc_mode", false);
+                    if (frcModeVal) {
+                        FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
+                                closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
+                        if (cameraPose != null) {
+                            telemetry = String.format("Target ID: %d (FRC Field)\n" +
+                                            "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                            "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                                    closestPose.id, cameraPose.x, cameraPose.y, cameraPose.z,
+                                    cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
+                        } else {
+                            telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
+                                            "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                            "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                                    closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
+                                    closestPose.roll, closestPose.pitch, closestPose.yaw);
+                        }
+                    } else {
+                        telemetry = String.format("Target ID: %d\n" +
+                                        "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                        "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                                closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
+                                closestPose.roll, closestPose.pitch, closestPose.yaw);
+                    }
                     mPoseTextView.post(new Runnable() {
                         @Override
                         public void run() {
