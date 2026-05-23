@@ -764,6 +764,118 @@ public class DetectionThread extends Thread {
         return pose;
     }
 
+    private static class MultiTagResult {
+        public FRCTagLayout.CameraPose cameraPose;
+        public double[][] R_f_c;
+        public int closestTagId;
+    }
+
+    private MultiTagResult computeMultiTagCameraPose(ArrayList<Pose3D> poses) {
+        double sumX = 0;
+        double sumY = 0;
+        double sumZ = 0;
+        
+        double[][] R_sum = new double[3][3];
+        double totalWeight = 0;
+        int validCount = 0;
+        int closestTagId = -1;
+        double minCamDist = Double.MAX_VALUE;
+
+        for (Pose3D pose : poses) {
+            FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
+                    pose.id, pose.r1, pose.r2, pose.r3, pose.t);
+            if (cameraPose != null) {
+                double dist = Math.max(0.1, pose.distance);
+                double weight = 1.0 / (dist * dist);
+
+                sumX += cameraPose.x * weight;
+                sumY += cameraPose.y * weight;
+                sumZ += cameraPose.z * weight;
+
+                // Reconstruct R_f_c for this detection
+                double[][] T_field_tag = FRCTagLayout.TAG_TRANSFORMS[pose.id];
+                double[][] R_f_c_temp = new double[3][3];
+                for (int i = 0; i < 3; i++) {
+                    R_f_c_temp[i][0] = T_field_tag[i][0]*pose.r1[0] + T_field_tag[i][1]*pose.r2[0] + T_field_tag[i][2]*pose.r3[0];
+                    R_f_c_temp[i][1] = T_field_tag[i][0]*pose.r1[1] + T_field_tag[i][1]*pose.r2[1] + T_field_tag[i][2]*pose.r3[1];
+                    R_f_c_temp[i][2] = T_field_tag[i][0]*pose.r1[2] + T_field_tag[i][1]*pose.r2[2] + T_field_tag[i][2]*pose.r3[2];
+                }
+
+                // Add to R_sum
+                for (int i = 0; i < 3; i++) {
+                    for (int j = 0; j < 3; j++) {
+                        R_sum[i][j] += R_f_c_temp[i][j] * weight;
+                    }
+                }
+
+                totalWeight += weight;
+                validCount++;
+
+                if (pose.distance < minCamDist) {
+                    minCamDist = pose.distance;
+                    closestTagId = pose.id;
+                }
+            }
+        }
+
+        if (validCount == 0) {
+            return null;
+        }
+
+        double avgX = sumX / totalWeight;
+        double avgY = sumY / totalWeight;
+        double avgZ = sumZ / totalWeight;
+
+        // Orthogonalize R_sum using Gram-Schmidt
+        // Column 0
+        double len0 = Math.sqrt(R_sum[0][0]*R_sum[0][0] + R_sum[1][0]*R_sum[1][0] + R_sum[2][0]*R_sum[2][0]);
+        if (len0 < 1e-6) len0 = 1.0;
+        double[] r0 = new double[]{R_sum[0][0]/len0, R_sum[1][0]/len0, R_sum[2][0]/len0};
+        
+        // Column 1
+        double dot01 = r0[0]*R_sum[0][1] + r0[1]*R_sum[1][1] + r0[2]*R_sum[2][1];
+        double[] r1_proj = new double[]{
+            R_sum[0][1] - dot01*r0[0],
+            R_sum[1][1] - dot01*r0[1],
+            R_sum[2][1] - dot01*r0[2]
+        };
+        double len1 = Math.sqrt(r1_proj[0]*r1_proj[0] + r1_proj[1]*r1_proj[1] + r1_proj[2]*r1_proj[2]);
+        if (len1 < 1e-6) len1 = 1.0;
+        double[] r1 = new double[]{r1_proj[0]/len1, r1_proj[1]/len1, r1_proj[2]/len1};
+        
+        // Column 2 = Col 0 x Col 1
+        double[] r2 = new double[]{
+            r0[1]*r1[2] - r0[2]*r1[1],
+            r0[2]*r1[0] - r0[0]*r1[2],
+            r0[0]*r1[1] - r0[1]*r1[0]
+        };
+
+        double[][] R_f_c = new double[3][3];
+        R_f_c[0][0] = r0[0]; R_f_c[1][0] = r0[1]; R_f_c[2][0] = r0[2];
+        R_f_c[0][1] = r1[0]; R_f_c[1][1] = r1[1]; R_f_c[2][1] = r1[2];
+        R_f_c[0][2] = r2[0]; R_f_c[1][2] = r2[1]; R_f_c[2][2] = r2[2];
+
+        // Extract Roll, Pitch, Yaw from final R_f_c
+        double pitch = Math.asin(-R_f_c[0][2]);
+        double roll, yaw;
+        if (Math.cos(pitch) > 1e-4) {
+            roll = Math.atan2(R_f_c[1][2], R_f_c[2][2]);
+            yaw = Math.atan2(R_f_c[0][1], R_f_c[0][0]);
+        } else {
+            roll = 0.0;
+            yaw = Math.atan2(-R_f_c[1][0], R_f_c[1][1]);
+        }
+
+        FRCTagLayout.CameraPose cameraPose = new FRCTagLayout.CameraPose(
+                avgX, avgY, avgZ, Math.toDegrees(roll), Math.toDegrees(pitch), Math.toDegrees(yaw));
+
+        MultiTagResult result = new MultiTagResult();
+        result.cameraPose = cameraPose;
+        result.R_f_c = R_f_c;
+        result.closestTagId = closestTagId;
+        return result;
+    }
+
     private void renderFRCView(ArrayList<ApriltagDetection> detections, Canvas canvas) {
         if (mFrcFieldBitmap == null) {
             BitmapFactory.Options options = new BitmapFactory.Options();
@@ -837,24 +949,17 @@ public class DetectionThread extends Thread {
             fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
         }
 
-        Pose3D closestPose = null;
-        double minDistance = Double.MAX_VALUE;
-
+        ArrayList<Pose3D> poses = new ArrayList<>();
         for (ApriltagDetection detection : detections) {
             Pose3D pose = estimatePose(detection, tagSize, fx, fy, cx, cy);
             if (pose != null) {
-                if (pose.distance < minDistance) {
-                    minDistance = pose.distance;
-                    closestPose = pose;
-                }
+                poses.add(pose);
             }
         }
 
-        FRCTagLayout.CameraPose cameraPose = null;
-        if (closestPose != null) {
-            cameraPose = FRCTagLayout.computeCameraPoseOnField(
-                    closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
-        }
+        MultiTagResult multiTagResult = computeMultiTagCameraPose(poses);
+        FRCTagLayout.CameraPose cameraPose = (multiTagResult != null) ? multiTagResult.cameraPose : null;
+        int targetId = (multiTagResult != null) ? multiTagResult.closestTagId : -1;
 
         // Draw camera estimated pose if available
         if (cameraPose != null) {
@@ -939,12 +1044,21 @@ public class DetectionThread extends Thread {
         if (mPoseTextView != null) {
             final String telemetry;
             if (cameraPose != null) {
-                telemetry = String.format("Target ID: %d (FRC Field)\n" +
+                telemetry = String.format("Target ID: %d (FRC Field Multi-Tag)\n" +
                                 "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
                                 "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                        closestPose.id, cameraPose.x, cameraPose.y, cameraPose.z,
+                        targetId, cameraPose.x, cameraPose.y, cameraPose.z,
                         cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
-            } else if (closestPose != null) {
+            } else if (poses.size() > 0) {
+                // Find closest pose for fallback telemetry
+                Pose3D closestPose = null;
+                double minDistance = Double.MAX_VALUE;
+                for (Pose3D pose : poses) {
+                    if (pose.distance < minDistance) {
+                        minDistance = pose.distance;
+                        closestPose = pose;
+                    }
+                }
                 telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
                                 "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
                                 "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
@@ -1048,9 +1162,10 @@ public class DetectionThread extends Thread {
         double camZ_field = 0.0;
         double[][] R_f_c = null;
         boolean cameraEstimated = false;
-
+        MultiTagResult multiTagResult = null;
         Pose3D closestPose = null;
-        if (validCount > 0) {
+
+        if (poses.size() > 0) {
             double minCamDist = Double.MAX_VALUE;
             for (Pose3D pose : poses) {
                 if (pose.distance < minCamDist) {
@@ -1058,30 +1173,16 @@ public class DetectionThread extends Thread {
                     closestPose = pose;
                 }
             }
-            if (frcMode && closestPose != null) {
-                FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
-                        closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
-                if (cameraPose != null) {
-                    camX_field = cameraPose.x;
-                    camY_field = cameraPose.y;
-                    camZ_field = cameraPose.z;
-                    cameraEstimated = true;
+        }
 
-                    // Reconstruct R_f_c rotation matrix
-                    double[][] T_field_tag = FRCTagLayout.TAG_TRANSFORMS[closestPose.id];
-                    R_f_c = new double[3][3];
-                    R_f_c[0][0] = T_field_tag[0][0]*closestPose.r1[0] + T_field_tag[0][1]*closestPose.r2[0] + T_field_tag[0][2]*closestPose.r3[0];
-                    R_f_c[0][1] = T_field_tag[0][0]*closestPose.r1[1] + T_field_tag[0][1]*closestPose.r2[1] + T_field_tag[0][2]*closestPose.r3[1];
-                    R_f_c[0][2] = T_field_tag[0][0]*closestPose.r1[2] + T_field_tag[0][1]*closestPose.r2[2] + T_field_tag[0][2]*closestPose.r3[2];
-
-                    R_f_c[1][0] = T_field_tag[1][0]*closestPose.r1[0] + T_field_tag[1][1]*closestPose.r2[0] + T_field_tag[1][2]*closestPose.r3[0];
-                    R_f_c[1][1] = T_field_tag[1][0]*closestPose.r1[1] + T_field_tag[1][1]*closestPose.r2[1] + T_field_tag[1][2]*closestPose.r3[1];
-                    R_f_c[1][2] = T_field_tag[1][0]*closestPose.r1[2] + T_field_tag[1][1]*closestPose.r2[2] + T_field_tag[1][2]*closestPose.r3[2];
-
-                    R_f_c[2][0] = T_field_tag[2][0]*closestPose.r1[0] + T_field_tag[2][1]*closestPose.r2[0] + T_field_tag[2][2]*closestPose.r3[0];
-                    R_f_c[2][1] = T_field_tag[2][0]*closestPose.r1[1] + T_field_tag[2][1]*closestPose.r2[1] + T_field_tag[2][2]*closestPose.r3[1];
-                    R_f_c[2][2] = T_field_tag[2][0]*closestPose.r1[2] + T_field_tag[2][1]*closestPose.r2[2] + T_field_tag[2][2]*closestPose.r3[2];
-                }
+        if (frcMode && poses.size() > 0) {
+            multiTagResult = computeMultiTagCameraPose(poses);
+            if (multiTagResult != null) {
+                camX_field = multiTagResult.cameraPose.x;
+                camY_field = multiTagResult.cameraPose.y;
+                camZ_field = multiTagResult.cameraPose.z;
+                R_f_c = multiTagResult.R_f_c;
+                cameraEstimated = true;
             }
         }
 
@@ -1414,13 +1515,12 @@ public class DetectionThread extends Thread {
                 SharedPreferences sharedPrefs = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
                 boolean frcModeVal = sharedPrefs.getBoolean("frc_mode", false);
                 if (frcModeVal) {
-                    FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
-                            closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
-                    if (cameraPose != null) {
-                        telemetry = String.format("Target ID: %d (FRC Field)\n" +
+                    if (multiTagResult != null) {
+                        FRCTagLayout.CameraPose cameraPose = multiTagResult.cameraPose;
+                        telemetry = String.format("Target ID: %d (FRC Field Multi-Tag)\n" +
                                         "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
                                         "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                                closestPose.id, cameraPose.x, cameraPose.y, cameraPose.z,
+                                multiTagResult.closestTagId, cameraPose.x, cameraPose.y, cameraPose.z,
                                 cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
                     } else {
                         telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
@@ -1483,8 +1583,12 @@ public class DetectionThread extends Thread {
                 scaleDetectionY = (float)(canvas.getWidth()) / mCameraSize.height;
             }
 
+            ArrayList<Pose3D> poses = new ArrayList<>();
             for (ApriltagDetection detection : detections) {
                 Pose3D pose = renderDetection(detection, canvas);
+                if (pose != null) {
+                    poses.add(pose);
+                }
 
                 if (mCameraSize != null) {
                     float tagCenterX = (float) (canvas.getWidth() - detection.c[1] * scaleDetectionY);
@@ -1509,13 +1613,13 @@ public class DetectionThread extends Thread {
                     SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(mTextureView.getContext());
                     boolean frcModeVal = sharedPreferences.getBoolean("frc_mode", false);
                     if (frcModeVal) {
-                        FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
-                                closestPose.id, closestPose.r1, closestPose.r2, closestPose.r3, closestPose.t);
-                        if (cameraPose != null) {
-                            telemetry = String.format("Target ID: %d (FRC Field)\n" +
+                        MultiTagResult multiTagResult = computeMultiTagCameraPose(poses);
+                        if (multiTagResult != null) {
+                            FRCTagLayout.CameraPose cameraPose = multiTagResult.cameraPose;
+                            telemetry = String.format("Target ID: %d (FRC Field Multi-Tag)\n" +
                                             "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
                                             "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                                    closestPose.id, cameraPose.x, cameraPose.y, cameraPose.z,
+                                    multiTagResult.closestTagId, cameraPose.x, cameraPose.y, cameraPose.z,
                                     cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
                         } else {
                             telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
