@@ -62,9 +62,9 @@ public class DetectionThread extends Thread {
         mVirtualYaw += dYaw;
         mVirtualPitch += dPitch;
 
-        // Clip pitch to prevent flipping upside down
+        // Clip pitch to prevent flipping upside down or going underground
         float maxPitch = (float) Math.toRadians(85);
-        float minPitch = (float) Math.toRadians(-85);
+        float minPitch = (float) Math.toRadians(-5);
         if (mVirtualPitch > maxPitch) mVirtualPitch = maxPitch;
         if (mVirtualPitch < minPitch) mVirtualPitch = minPitch;
     }
@@ -782,8 +782,16 @@ public class DetectionThread extends Thread {
         double minCamDist = Double.MAX_VALUE;
 
         for (Pose3D pose : poses) {
+            // Convert pose rotation columns from detector convention to FRC/WPILib convention:
+            // r1_frc = -pose.r3 (tag normal)
+            // r2_frc = pose.r1  (horizontal left)
+            // r3_frc = -pose.r2 (vertical up)
+            double[] r1_frc = new double[]{-pose.r3[0], -pose.r3[1], -pose.r3[2]};
+            double[] r2_frc = new double[]{pose.r1[0], pose.r1[1], pose.r1[2]};
+            double[] r3_frc = new double[]{-pose.r2[0], -pose.r2[1], -pose.r2[2]};
+
             FRCTagLayout.CameraPose cameraPose = FRCTagLayout.computeCameraPoseOnField(
-                    pose.id, pose.r1, pose.r2, pose.r3, pose.t);
+                    pose.id, r1_frc, r2_frc, r3_frc, pose.t);
             if (cameraPose != null) {
                 double dist = Math.max(0.1, pose.distance);
                 double weight = 1.0 / (dist * dist);
@@ -792,13 +800,13 @@ public class DetectionThread extends Thread {
                 sumY += cameraPose.y * weight;
                 sumZ += cameraPose.z * weight;
 
-                // Reconstruct R_f_c for this detection
+                // Reconstruct R_f_c for this detection using FRC convention columns
                 double[][] T_field_tag = FRCTagLayout.TAG_TRANSFORMS[pose.id];
                 double[][] R_f_c_temp = new double[3][3];
                 for (int i = 0; i < 3; i++) {
-                    R_f_c_temp[i][0] = T_field_tag[i][0]*pose.r1[0] + T_field_tag[i][1]*pose.r2[0] + T_field_tag[i][2]*pose.r3[0];
-                    R_f_c_temp[i][1] = T_field_tag[i][0]*pose.r1[1] + T_field_tag[i][1]*pose.r2[1] + T_field_tag[i][2]*pose.r3[1];
-                    R_f_c_temp[i][2] = T_field_tag[i][0]*pose.r1[2] + T_field_tag[i][1]*pose.r2[2] + T_field_tag[i][2]*pose.r3[2];
+                    R_f_c_temp[i][0] = T_field_tag[i][0]*r1_frc[0] + T_field_tag[i][1]*r2_frc[0] + T_field_tag[i][2]*r3_frc[0];
+                    R_f_c_temp[i][1] = T_field_tag[i][0]*r1_frc[1] + T_field_tag[i][1]*r2_frc[1] + T_field_tag[i][2]*r3_frc[1];
+                    R_f_c_temp[i][2] = T_field_tag[i][0]*r1_frc[2] + T_field_tag[i][1]*r2_frc[2] + T_field_tag[i][2]*r3_frc[2];
                 }
 
                 // Add to R_sum
@@ -855,15 +863,15 @@ public class DetectionThread extends Thread {
         R_f_c[0][1] = r1[0]; R_f_c[1][1] = r1[1]; R_f_c[2][1] = r1[2];
         R_f_c[0][2] = r2[0]; R_f_c[1][2] = r2[1]; R_f_c[2][2] = r2[2];
 
-        // Extract Roll, Pitch, Yaw from final R_f_c
-        double pitch = Math.asin(-R_f_c[0][2]);
+        // Extract Roll, Pitch, Yaw from final R_f_c relative to FRC horizontal reference orientation
+        double pitch = Math.asin(-R_f_c[2][2]);
         double roll, yaw;
-        if (Math.cos(pitch) > 1e-4) {
-            roll = Math.atan2(R_f_c[1][2], R_f_c[2][2]);
-            yaw = Math.atan2(R_f_c[0][1], R_f_c[0][0]);
+        if (Math.abs(R_f_c[2][2]) < 0.999) {
+            roll = Math.atan2(-R_f_c[2][0], -R_f_c[2][1]);
+            yaw = Math.atan2(R_f_c[1][2], R_f_c[0][2]);
         } else {
             roll = 0.0;
-            yaw = Math.atan2(-R_f_c[1][0], R_f_c[1][1]);
+            yaw = Math.atan2(-R_f_c[0][1], R_f_c[0][0]);
         }
 
         FRCTagLayout.CameraPose cameraPose = new FRCTagLayout.CameraPose(
@@ -963,9 +971,10 @@ public class DetectionThread extends Thread {
 
         // Draw camera estimated pose if available
         if (cameraPose != null) {
-            double x_field = cameraPose.x;
+            // Horizontally flip X axis and yaw to match the background field image (where Red is on the Left and Blue is on the Right)
+            double x_field = -cameraPose.x;
             double y_field = cameraPose.y;
-            double yaw_field = cameraPose.yaw; // in degrees
+            double yaw_field = 180.0 - cameraPose.yaw; // in degrees
 
             // Normalization equations
             double normX = (x_field - (-8.259)) / 16.518;
@@ -1327,10 +1336,10 @@ public class DetectionThread extends Thread {
                 }
 
                 double[][] corners_tag = {
-                    {-s2, s2, 0.0},
-                    {s2, s2, 0.0},
-                    {s2, -s2, 0.0},
-                    {-s2, -s2, 0.0}
+                    {0.0, s2, s2},    // Top-Left (Corner 0)
+                    {0.0, -s2, s2},   // Top-Right (Corner 1)
+                    {0.0, -s2, -s2},  // Bottom-Right (Corner 2)
+                    {0.0, s2, -s2}    // Bottom-Left (Corner 3)
                 };
 
                 float[][] corners_proj = new float[4][];
@@ -1373,6 +1382,39 @@ public class DetectionThread extends Thread {
 
                     canvas.drawPath(mPath, fillPaintToUse);
                     canvas.drawPath(mPath, borderPaintToUse);
+                }
+
+                // Draw coordinate axes on the tag center
+                if (tagCenterProj != null) {
+                    double L = tagSize;
+                    double xAxisX_f = T_field_tag[0][0] * L + T_field_tag[0][3];
+                    double xAxisY_f = T_field_tag[1][0] * L + T_field_tag[1][3];
+                    double xAxisZ_f = T_field_tag[2][0] * L + T_field_tag[2][3];
+
+                    double yAxisX_f = T_field_tag[0][1] * L + T_field_tag[0][3];
+                    double yAxisY_f = T_field_tag[1][1] * L + T_field_tag[1][3];
+                    double yAxisZ_f = T_field_tag[2][1] * L + T_field_tag[2][3];
+
+                    double zAxisX_f = T_field_tag[0][2] * L + T_field_tag[0][3];
+                    double zAxisY_f = T_field_tag[1][2] * L + T_field_tag[1][3];
+                    double zAxisZ_f = T_field_tag[2][2] * L + T_field_tag[2][3];
+
+                    float[] pxAxisProj = projectFieldPointToVirtual(xAxisX_f, xAxisY_f, xAxisZ_f, width, height);
+                    float[] pyAxisProj = projectFieldPointToVirtual(yAxisX_f, yAxisY_f, yAxisZ_f, width, height);
+                    float[] pzAxisProj = projectFieldPointToVirtual(zAxisX_f, zAxisY_f, zAxisZ_f, width, height);
+
+                    if (pxAxisProj != null) {
+                        mTagAxisPaint.setColor(0xFFFF3F3F); // Red (X)
+                        canvas.drawLine(tagCenterProj[0], tagCenterProj[1], pxAxisProj[0], pxAxisProj[1], mTagAxisPaint);
+                    }
+                    if (pyAxisProj != null) {
+                        mTagAxisPaint.setColor(0xFF3FDF3F); // Green (Y)
+                        canvas.drawLine(tagCenterProj[0], tagCenterProj[1], pyAxisProj[0], pyAxisProj[1], mTagAxisPaint);
+                    }
+                    if (pzAxisProj != null) {
+                        mTagAxisPaint.setColor(0xFF3F3FFF); // Blue (Z)
+                        canvas.drawLine(tagCenterProj[0], tagCenterProj[1], pzAxisProj[0], pzAxisProj[1], mTagAxisPaint);
+                    }
                 }
 
                 if (tagCenterProj != null) {

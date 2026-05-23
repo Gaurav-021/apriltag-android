@@ -285,15 +285,15 @@ public class FRCTagLayout {
         double r21_f_c = T_field_tag[2][0]*r1[1] + T_field_tag[2][1]*r2[1] + T_field_tag[2][2]*r3[1];
         double r22_f_c = T_field_tag[2][0]*r1[2] + T_field_tag[2][1]*r2[2] + T_field_tag[2][2]*r3[2];
 
-        // Extract Euler Angles (Roll, Pitch, Yaw) from R_f_c
-        double pitch = Math.asin(-r02_f_c);
+        // Extract Euler Angles (Roll, Pitch, Yaw) from R_f_c relative to FRC horizontal reference orientation
+        double pitch = Math.asin(-r22_f_c);
         double roll, yaw;
-        if (Math.cos(pitch) > 1e-4) {
-            roll = Math.atan2(r12_f_c, r22_f_c);
-            yaw = Math.atan2(r01_f_c, r00_f_c);
+        if (Math.abs(r22_f_c) < 0.999) {
+            roll = Math.atan2(-r20_f_c, -r21_f_c);
+            yaw = Math.atan2(r12_f_c, r02_f_c);
         } else {
             roll = 0.0;
-            yaw = Math.atan2(-r10_f_c, r11_f_c);
+            yaw = Math.atan2(-r01_f_c, r00_f_c);
         }
 
         return new CameraPose(x_field, y_field, z_field, Math.toDegrees(roll), Math.toDegrees(pitch), Math.toDegrees(yaw));
