@@ -17,7 +17,11 @@ import android.preference.PreferenceManager;
 import android.preference.SwitchPreference;
 import android.util.Log;
 import android.view.MenuItem;
-import android.hardware.Camera;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.params.StreamConfigurationMap;
+import android.util.Size;
+import android.graphics.SurfaceTexture;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -163,49 +167,54 @@ public class SettingsActivity extends PreferenceActivity {
             // Populate camera preview resolutions dynamically
             ListPreference resolutionPref = (ListPreference) findPreference("preview_resolution");
             if (resolutionPref != null) {
-                Camera camera = null;
                 try {
-                    int camidx = 0;
-                    Camera.CameraInfo info = new Camera.CameraInfo();
-                    for (int i = 0; i < Camera.getNumberOfCameras(); i += 1) {
-                        Camera.getCameraInfo(i, info);
-                        if (info.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
-                            camidx = i;
+                    CameraManager manager = (CameraManager) getActivity().getSystemService(Context.CAMERA_SERVICE);
+                    String backCameraId = null;
+                    for (String id : manager.getCameraIdList()) {
+                        CameraCharacteristics characteristics = manager.getCameraCharacteristics(id);
+                        Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+                        if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                            backCameraId = id;
                             break;
                         }
                     }
-                    camera = Camera.open(camidx);
-                    Camera.Parameters parameters = camera.getParameters();
-                    List<Camera.Size> supportedSizes = parameters.getSupportedPreviewSizes();
-                    
-                    if (supportedSizes != null && supportedSizes.size() > 0) {
-                        ArrayList<String> entries = new ArrayList<>();
-                        ArrayList<String> entryValues = new ArrayList<>();
-                        
-                        entries.add("Default (Largest)");
-                        entryValues.add("largest");
-                        
-                        for (Camera.Size size : supportedSizes) {
-                            if (size.width == size.height) continue;
-                            String label = size.width + "x" + size.height;
-                            if (size.width == 1920 && size.height == 1080) {
-                                label += " (1080p)";
-                            } else if (size.width == 1280 && size.height == 720) {
-                                label += " (720p)";
-                            } else if (size.width == 960 && size.height == 540) {
-                                label += " (qHD)";
-                            } else if (size.width == 640 && size.height == 480) {
-                                label += " (VGA)";
+
+                    if (backCameraId != null) {
+                        CameraCharacteristics characteristics = manager.getCameraCharacteristics(backCameraId);
+                        StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                        Size[] supportedSizes = map != null ? map.getOutputSizes(SurfaceTexture.class) : null;
+
+                        if (supportedSizes != null && supportedSizes.length > 0) {
+                            ArrayList<String> entries = new ArrayList<>();
+                            ArrayList<String> entryValues = new ArrayList<>();
+
+                            entries.add("Default (Largest)");
+                            entryValues.add("largest");
+
+                            for (Size size : supportedSizes) {
+                                int w = size.getWidth();
+                                int h = size.getHeight();
+                                if (w == h) continue;
+                                String label = w + "x" + h;
+                                if (w == 1920 && h == 1080) {
+                                    label += " (1080p)";
+                                } else if (w == 1280 && h == 720) {
+                                    label += " (720p)";
+                                } else if (w == 960 && h == 540) {
+                                    label += " (qHD)";
+                                } else if (w == 640 && h == 480) {
+                                    label += " (VGA)";
+                                }
+                                entries.add(label);
+                                entryValues.add(w + "x" + h);
                             }
-                            entries.add(label);
-                            entryValues.add(size.width + "x" + size.height);
-                        }
-                        
-                        resolutionPref.setEntries(entries.toArray(new CharSequence[0]));
-                        resolutionPref.setEntryValues(entryValues.toArray(new CharSequence[0]));
-                        
-                        if (resolutionPref.getValue() == null) {
-                            resolutionPref.setValue("largest");
+
+                            resolutionPref.setEntries(entries.toArray(new CharSequence[0]));
+                            resolutionPref.setEntryValues(entryValues.toArray(new CharSequence[0]));
+
+                            if (resolutionPref.getValue() == null) {
+                                resolutionPref.setValue("largest");
+                            }
                         }
                     }
                 } catch (Exception e) {
@@ -213,10 +222,6 @@ public class SettingsActivity extends PreferenceActivity {
                     resolutionPref.setEntries(new CharSequence[]{"Default (Largest)"});
                     resolutionPref.setEntryValues(new CharSequence[]{"largest"});
                     resolutionPref.setValue("largest");
-                } finally {
-                    if (camera != null) {
-                        camera.release();
-                    }
                 }
                 bindPreferenceSummaryToValue(resolutionPref);
             }

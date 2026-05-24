@@ -8,10 +8,10 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
-import android.support.v4.app.ActivityCompat;
-import android.support.v4.content.ContextCompat;
-import android.support.v7.app.AppCompatActivity;
-import android.support.v7.widget.Toolbar;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Menu;
@@ -25,9 +25,10 @@ import android.view.MotionEvent;
 import android.os.Build;
 import android.view.Window;
 import android.view.ViewGroup;
-import android.support.v4.view.ViewCompat;
-import android.support.v4.view.OnApplyWindowInsetsListener;
-import android.support.v4.view.WindowInsetsCompat;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.OnApplyWindowInsetsListener;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.camera.view.PreviewView;
 
 
 /**
@@ -38,7 +39,7 @@ import android.support.v4.view.WindowInsetsCompat;
 public class ApriltagDetectorActivity extends AppCompatActivity {
     private static final String TAG = "AprilTag";
     private DetectionThread mDetectionThread;
-    private CameraPreviewThread mCameraPreviewThread;
+    private CameraXManager mCameraXManager;
     private int mRenderMode = DetectionThread.MODE_2D;
 
     private static final int MY_PERMISSIONS_REQUEST_CAMERA = 77;
@@ -165,15 +166,9 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
     }
 
     private void stopThreads() {
-        if (mCameraPreviewThread != null) {
-            mCameraPreviewThread.interrupt();
-            mCameraPreviewThread.destroy();
-            try {
-                mCameraPreviewThread.join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-            mCameraPreviewThread = null;
+        if (mCameraXManager != null) {
+            mCameraXManager.stop();
+            mCameraXManager = null;
         }
         if (mDetectionThread != null) {
             mDetectionThread.interrupt();
@@ -264,13 +259,12 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
             }
         });
 
-        // Start the camera preview on a separate thread
-        SurfaceView previewSurface = (SurfaceView) findViewById(R.id.surfaceView);
-        TextView previewFpsTextView = (TextView) findViewById(R.id.previewFpsTextView);
+        // Start the CameraX preview and stream analyzer
+        PreviewView previewView = findViewById(R.id.previewView);
+        TextView previewFpsTextView = findViewById(R.id.previewFpsTextView);
         stylizeText(previewFpsTextView);
-        mCameraPreviewThread = new CameraPreviewThread(previewSurface.getHolder(), mDetectionThread, previewFpsTextView);
-        mCameraPreviewThread.initialize();
-        mCameraPreviewThread.start();
+        mCameraXManager = new CameraXManager(this, previewView, mDetectionThread, previewFpsTextView);
+        mCameraXManager.start();
     }
 
     private void stylizeText(TextView textView) {

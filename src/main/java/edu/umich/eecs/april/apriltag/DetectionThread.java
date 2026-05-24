@@ -10,7 +10,6 @@ import android.graphics.Typeface;
 import android.graphics.PorterDuff;
 import android.graphics.SurfaceTexture;
 import android.graphics.DashPathEffect;
-import android.hardware.Camera;
 import android.util.Log;
 import android.view.TextureView;
 import android.widget.TextView;
@@ -27,10 +26,14 @@ public class DetectionThread extends Thread {
     private static final String TAG = "DetectionThread";
     private TextureView mTextureView;
 
-    private final TextView mFpsTextView;
+        private final TextView mFpsTextView;
     private final TextView mPoseTextView;
     private long mLastFPSRender = System.currentTimeMillis();
-    private Camera.Size mCameraSize;
+    private int mCameraWidth = 0;
+    private int mCameraHeight = 0;
+    private float mRenderScale = 1.0f;
+    private float mRenderOffsetX = 0.0f;
+    private float mRenderOffsetY = 0.0f;
     private static final int MAX_FRAME_QUEUE_SIZE = 1;
 
     private BlockingQueue<byte[]> mCameraFrameQueue = new LinkedBlockingQueue<>();
@@ -446,8 +449,8 @@ public class DetectionThread extends Thread {
         double xPix = xCam * (fx / zCam) + cx;
         double yPix = yCam * (fy / zCam) + cy;
 
-        outPoint[0] = (float) (canvas.getWidth() - yPix * scaleDetectionY);
-        outPoint[1] = (float) (xPix * scaleDetectionX);
+        outPoint[0] = (float) ((mCameraHeight - yPix) * mRenderScale + mRenderOffsetX);
+        outPoint[1] = (float) (xPix * mRenderScale + mRenderOffsetY);
 
         return true;
     }
@@ -595,10 +598,11 @@ public class DetectionThread extends Thread {
         }
     }
 
-    public void enqueueCameraFrame(byte[] data, Camera.Size cameraSize) throws InterruptedException {
-        if (mCameraSize == null || mCameraSize.width != cameraSize.width || mCameraSize.height != cameraSize.height) {
+    public void enqueueCameraFrame(byte[] data, int width, int height) throws InterruptedException {
+        if (mCameraWidth != width || mCameraHeight != height) {
             mCameraFrameQueue.clear();
-            mCameraSize = cameraSize;
+            mCameraWidth = width;
+            mCameraHeight = height;
             Log.w(TAG, "Camera size changed during preview");
         }
 
@@ -645,9 +649,9 @@ public class DetectionThread extends Thread {
         return cropped;
     }
 
-    private ArrayList<ApriltagDetection> processCameraFrame(byte[] data, Camera.Size cameraSize)  {
+    private ArrayList<ApriltagDetection> processCameraFrame(byte[] data, int width, int height)  {
         try {
-            return ApriltagNative.apriltag_detect_yuv_flat_decoded(data, cameraSize.width, cameraSize.height);
+            return ApriltagNative.apriltag_detect_yuv_flat_decoded(data, width, height);
         } catch (Exception e) {
             Log.e(TAG, "Unhandled exception when detecting tags: " + e);
             return new ArrayList<>();
@@ -655,10 +659,10 @@ public class DetectionThread extends Thread {
     }
 
     private Pose3D renderDetection(ApriltagDetection detection, Canvas canvas) {
-        if (mCameraSize == null) return null;
+        if (mCameraWidth == 0 || mCameraHeight == 0) return null;
 
-        float scaleDetectionX = (float)(canvas.getHeight()) / mCameraSize.width; // Converts detection x to render y
-        float scaleDetectionY = (float)(canvas.getWidth()) / mCameraSize.height; // Converts detection y to render x (still needs offset)
+        float scaleDetectionX = (float)(canvas.getHeight()) / mCameraWidth; // Converts detection x to render y
+        float scaleDetectionY = (float)(canvas.getWidth()) / mCameraHeight; // Converts detection y to render x (still needs offset)
 
         double[] points = detection.p;
         if (points == null || points.length != 8) {
@@ -670,8 +674,8 @@ public class DetectionThread extends Thread {
         float[] xPointsCanvas = mDetectionXPoints;
         float[] yPointsCanvas = mDetectionYPoints;
         for (int i = 0; i < 4; i++) {
-            xPointsCanvas[i] = (float) (canvas.getWidth() - points[i * 2 + 1] * scaleDetectionY);
-            yPointsCanvas[i] = (float) (points[i * 2] * scaleDetectionX);
+            xPointsCanvas[i] = (float) ((mCameraHeight - points[i * 2 + 1]) * mRenderScale + mRenderOffsetX);
+            yPointsCanvas[i] = (float) (points[i * 2] * mRenderScale + mRenderOffsetY);
         }
 
         // Render filled outline of detections
@@ -693,8 +697,8 @@ public class DetectionThread extends Thread {
         double tagSize = mTagSize;
 
         // Check for manual camera calibration settings override (using cached settings)
-        double cx = mCameraSize.width / 2.0;
-        double cy = mCameraSize.height / 2.0;
+        double cx = mCameraWidth / 2.0;
+        double cy = mCameraHeight / 2.0;
         double fx, fy;
 
         if (mCalOverride) {
@@ -1031,8 +1035,8 @@ public class DetectionThread extends Thread {
 
         double tagSize = 0.1651; // Locked for FRC
 
-        double cx = mCameraSize != null ? mCameraSize.width / 2.0 : viewWidth / 2.0;
-        double cy = mCameraSize != null ? mCameraSize.height / 2.0 : viewHeight / 2.0;
+        double cx = mCameraWidth > 0 ? mCameraWidth / 2.0 : viewWidth / 2.0;
+        double cy = mCameraHeight > 0 ? mCameraHeight / 2.0 : viewHeight / 2.0;
         double fx, fy;
 
         if (mCalOverride) {
@@ -1156,8 +1160,8 @@ public class DetectionThread extends Thread {
         int height = canvas.getHeight();
 
         double tagSize = mTagSize;
-        double cx = mCameraSize != null ? mCameraSize.width / 2.0 : width / 2.0;
-        double cy = mCameraSize != null ? mCameraSize.height / 2.0 : height / 2.0;
+        double cx = mCameraWidth > 0 ? mCameraWidth / 2.0 : width / 2.0;
+        double cy = mCameraHeight > 0 ? mCameraHeight / 2.0 : height / 2.0;
         double fx, fy;
 
         if (mCalOverride) {
@@ -1640,11 +1644,15 @@ public class DetectionThread extends Thread {
             float screenCenterX = canvas.getWidth() / 2f;
             float screenCenterY = canvas.getHeight() / 2f;
 
-            float scaleDetectionX = 0;
-            float scaleDetectionY = 0;
-            if (mCameraSize != null) {
-                scaleDetectionX = (float)(canvas.getHeight()) / mCameraSize.width;
-                scaleDetectionY = (float)(canvas.getWidth()) / mCameraSize.height;
+            if (mCameraWidth > 0 && mCameraHeight > 0) {
+                float frameH = mCameraWidth;
+                float frameW = mCameraHeight;
+                float viewW = canvas.getWidth();
+                float viewH = canvas.getHeight();
+
+                mRenderScale = Math.max(viewW / frameW, viewH / frameH);
+                mRenderOffsetX = (viewW - frameW * mRenderScale) / 2.0f;
+                mRenderOffsetY = (viewH - frameH * mRenderScale) / 2.0f;
             }
 
             mDefaultPoses.clear();
@@ -1654,9 +1662,9 @@ public class DetectionThread extends Thread {
                     mDefaultPoses.add(pose);
                 }
 
-                if (mCameraSize != null) {
-                    float tagCenterX = (float) (canvas.getWidth() - detection.c[1] * scaleDetectionY);
-                    float tagCenterY = (float) (detection.c[0] * scaleDetectionX);
+                if (mCameraWidth > 0 && mCameraHeight > 0) {
+                    float tagCenterX = (float) ((mCameraHeight - detection.c[1]) * mRenderScale + mRenderOffsetX);
+                    float tagCenterY = (float) (detection.c[0] * mRenderScale + mRenderOffsetY);
                     double dist = Math.hypot(tagCenterX - screenCenterX, tagCenterY - screenCenterY);
                     if (dist < minDistance) {
                         minDistance = dist;
@@ -1742,9 +1750,9 @@ public class DetectionThread extends Thread {
             }
 
             ArrayList<ApriltagDetection> detections = null;
-            if (mCameraSize != null) {
-                int fullW = mCameraSize.width;
-                int fullH = mCameraSize.height;
+            if (mCameraWidth > 0 && mCameraHeight > 0) {
+                int fullW = mCameraWidth;
+                int fullH = mCameraHeight;
 
                 if (mRoiActive) {
                     int cropW = mRoiHalfSize * 2;
@@ -1783,7 +1791,7 @@ public class DetectionThread extends Thread {
 
                 // Fallback to full frame detection if ROI is inactive or returned empty
                 if (detections == null || (mRoiActive && detections.isEmpty())) {
-                    detections = processCameraFrame(data, mCameraSize);
+                    detections = processCameraFrame(data, mCameraWidth, mCameraHeight);
                     mRoiActive = false;
                 }
 
