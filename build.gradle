@@ -12,7 +12,7 @@ android {
 
     defaultConfig {
         applicationId "edu.umich.eecs.april.apriltag"
-        minSdkVersion 14
+        minSdkVersion 24
         targetSdkVersion 33
         versionCode 12
         versionName "1.2"
@@ -40,6 +40,7 @@ android {
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation 'junit:junit:4.12'
-    implementation 'com.android.support:appcompat-v7:24.2.0'
-    implementation 'com.android.support:support-v4:24.2.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    implementation 'com.google.ar:core:1.37.0'
 }

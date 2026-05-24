@@ -17,6 +17,7 @@ import android.widget.TextView;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.RectF;
+import android.opengl.Matrix;
 
 import java.util.ArrayList;
 import java.util.concurrent.BlockingQueue;
@@ -30,10 +31,30 @@ public class DetectionThread extends Thread {
     private final TextView mFpsTextView;
     private final TextView mPoseTextView;
     private long mLastFPSRender = System.currentTimeMillis();
-    private Camera.Size mCameraSize;
+    public static class CameraSize {
+        public int width;
+        public int height;
+        public CameraSize(int width, int height) {
+            this.width = width;
+            this.height = height;
+        }
+    }
+
+    public static class FrameData {
+        public byte[] yuvData;
+        public CameraSize cameraSize;
+        public float[] arPose; // 4x4 matrix, null if ARCore is not active
+        public FrameData(byte[] yuvData, CameraSize cameraSize, float[] arPose) {
+            this.yuvData = yuvData;
+            this.cameraSize = cameraSize;
+            this.arPose = arPose;
+        }
+    }
+
+    private CameraSize mCameraSize;
     private static final int MAX_FRAME_QUEUE_SIZE = 1;
 
-    private BlockingQueue<byte[]> mCameraFrameQueue = new LinkedBlockingQueue<>();
+    private BlockingQueue<FrameData> mCameraFrameQueue = new LinkedBlockingQueue<>();
     private long mLastEnqueueFrameTime;
     private int mFrameCount = 0;
     private long mLastDetectLatency = 0;
@@ -128,6 +149,26 @@ public class DetectionThread extends Thread {
     private final float[] mXAxisPoint = new float[2];
     private final float[] mYAxisPoint = new float[2];
     private final float[] mZAxisPoint = new float[2];
+
+    // ARCore tracking fields
+    private float[] mCurrentArPose = null;
+    private float[] mT_field_ar = null;
+    private boolean mHasAnchor = false;
+
+    // Latest camera intrinsics passed from ARCore
+    private double mArCoreFx = 0.0;
+    private double mArCoreFy = 0.0;
+    private double mArCoreCx = 0.0;
+    private double mArCoreCy = 0.0;
+    private boolean mHasArCoreIntrinsics = false;
+
+    public void setCameraIntrinsics(double fx, double fy, double cx, double cy) {
+        mArCoreFx = fx;
+        mArCoreFy = fy;
+        mArCoreCx = cx;
+        mArCoreCy = cy;
+        mHasArCoreIntrinsics = true;
+    }
 
     // Helper arrays for pose estimation
     private final double[] mXNorm = new double[4];
@@ -588,7 +629,15 @@ public class DetectionThread extends Thread {
         }
     }
 
-    public void enqueueCameraFrame(byte[] data, Camera.Size cameraSize) throws InterruptedException {
+    public void enqueueCameraFrame(byte[] data, int width, int height, float[] arPose) throws InterruptedException {
+        enqueueCameraFrameInternal(data, new CameraSize(width, height), arPose);
+    }
+
+    public void enqueueCameraFrame(byte[] data, android.hardware.Camera.Size cameraSize) throws InterruptedException {
+        enqueueCameraFrameInternal(data, new CameraSize(cameraSize.width, cameraSize.height), null);
+    }
+
+    private void enqueueCameraFrameInternal(byte[] data, CameraSize cameraSize, float[] arPose) throws InterruptedException {
         if (mCameraSize == null || mCameraSize.width != cameraSize.width || mCameraSize.height != cameraSize.height) {
             mCameraFrameQueue.clear();
             mCameraSize = cameraSize;
@@ -601,14 +650,15 @@ public class DetectionThread extends Thread {
         }
 
         if (mCameraFrameQueue.size() == MAX_FRAME_QUEUE_SIZE) {
-            mCameraFrameQueue.clear();
+            FrameData discarded = mCameraFrameQueue.poll();
+            if (discarded != null && mBufferReleaseListener != null) {
+                mBufferReleaseListener.onBufferReleased(discarded.yuvData);
+            }
             Log.w(TAG, "Camera frame queue is full, clearing buffer");
         }
 
-        mCameraFrameQueue.put(data);
+        mCameraFrameQueue.put(new FrameData(data, cameraSize, arPose));
         mLastEnqueueFrameTime = System.currentTimeMillis();
-
-        Log.i(TAG, "Buffer length: " + mCameraFrameQueue.size());
     }
 
     private void updateFps() {
@@ -628,7 +678,7 @@ public class DetectionThread extends Thread {
         }
     }
 
-    private ArrayList<ApriltagDetection> processCameraFrame(byte[] data, Camera.Size cameraSize)  {
+    private ArrayList<ApriltagDetection> processCameraFrame(byte[] data, CameraSize cameraSize)  {
         try {
             return ApriltagNative.apriltag_detect_yuv(data, cameraSize.width, cameraSize.height);
         } catch (Exception e) {
@@ -689,6 +739,11 @@ public class DetectionThread extends Thread {
             if (mCustomCy > 0.0) {
                 cy = mCustomCy;
             }
+        } else if (mHasArCoreIntrinsics) {
+            fx = mArCoreFx;
+            fy = mArCoreFy;
+            cx = mArCoreCx;
+            cy = mArCoreCy;
         } else {
             // Calculate Intrinsics from dynamic view angles
             fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
@@ -1023,6 +1078,11 @@ public class DetectionThread extends Thread {
             fy = mCustomFy;
             if (mCustomCx > 0.0) cx = mCustomCx;
             if (mCustomCy > 0.0) cy = mCustomCy;
+        } else if (mHasArCoreIntrinsics) {
+            fx = mArCoreFx;
+            fy = mArCoreFy;
+            cx = mArCoreCx;
+            cy = mArCoreCy;
         } else {
             fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
             fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
@@ -1036,7 +1096,7 @@ public class DetectionThread extends Thread {
             }
         }
 
-        MultiTagResult multiTagResult = computeMultiTagCameraPose(mFrcPoses);
+        MultiTagResult multiTagResult = getFusedCameraPose(mFrcPoses);
         FRCTagLayout.CameraPose cameraPose = (multiTagResult != null) ? multiTagResult.cameraPose : null;
         int targetId = (multiTagResult != null) ? multiTagResult.closestTagId : -1;
 
@@ -1152,6 +1212,11 @@ public class DetectionThread extends Thread {
             if (mCustomCy > 0.0) {
                 cy = mCustomCy;
             }
+        } else if (mHasArCoreIntrinsics) {
+            fx = mArCoreFx;
+            fy = mArCoreFy;
+            cx = mArCoreCx;
+            cy = mArCoreCy;
         } else {
             fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
             fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
@@ -1191,8 +1256,8 @@ public class DetectionThread extends Thread {
             }
         }
 
-        if (mFrcMode && m3dPoses.size() > 0) {
-            multiTagResult = computeMultiTagCameraPose(m3dPoses);
+        if (mFrcMode) {
+            multiTagResult = getFusedCameraPose(m3dPoses);
             if (multiTagResult != null) {
                 camX_field = multiTagResult.cameraPose.x;
                 camY_field = multiTagResult.cameraPose.y;
@@ -1556,26 +1621,24 @@ public class DetectionThread extends Thread {
                 }
             }
         }
-
-        // 4. Update diagnostics card telemetry
+             // 4. Update diagnostics card telemetry
         if (mPoseTextView != null) {
-            if (closestPose != null) {
-                final String telemetry;
+            final String telemetry;
+            if (mFrcMode && multiTagResult != null) {
+                FRCTagLayout.CameraPose cameraPose = multiTagResult.cameraPose;
+                String targetIdStr = (multiTagResult.closestTagId == -2) ? "VIO (Odometry)" : String.valueOf(multiTagResult.closestTagId);
+                telemetry = String.format("Target ID: %s (FRC Field)\n" +
+                                "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                        targetIdStr, cameraPose.x, cameraPose.y, cameraPose.z,
+                        cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
+            } else if (closestPose != null) {
                 if (mFrcMode) {
-                    if (multiTagResult != null) {
-                        FRCTagLayout.CameraPose cameraPose = multiTagResult.cameraPose;
-                        telemetry = String.format("Target ID: %d (FRC Field Multi-Tag)\n" +
-                                        "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
-                                        "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                                multiTagResult.closestTagId, cameraPose.x, cameraPose.y, cameraPose.z,
-                                cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
-                    } else {
-                        telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
-                                        "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
-                                        "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                                closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
-                                closestPose.roll, closestPose.pitch, closestPose.yaw);
-                    }
+                    telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
+                                    "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                    "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                            closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
+                            closestPose.roll, closestPose.pitch, closestPose.yaw);
                 } else {
                     telemetry = String.format("Target ID: %d\n" +
                                     "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
@@ -1583,20 +1646,15 @@ public class DetectionThread extends Thread {
                             closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
                             closestPose.roll, closestPose.pitch, closestPose.yaw);
                 }
-                mPoseTextView.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        mPoseTextView.setText(telemetry);
-                    }
-                });
             } else {
-                mPoseTextView.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        mPoseTextView.setText("No Target");
-                    }
-                });
+                telemetry = "No Target";
             }
+            mPoseTextView.post(new Runnable() {
+                @Override
+                public void run() {
+                    mPoseTextView.setText(telemetry);
+                }
+            });
         }
     }
 
@@ -1655,24 +1713,27 @@ public class DetectionThread extends Thread {
 
             // Update pose telemetry
             if (mPoseTextView != null) {
-                if (closestPose != null) {
-                    final String telemetry;
+                final String telemetry;
+                MultiTagResult fusedPoseResult = null;
+                if (mFrcMode) {
+                    fusedPoseResult = getFusedCameraPose(mDefaultPoses);
+                }
+
+                if (mFrcMode && fusedPoseResult != null) {
+                    FRCTagLayout.CameraPose cameraPose = fusedPoseResult.cameraPose;
+                    String targetIdStr = (fusedPoseResult.closestTagId == -2) ? "VIO (Odometry)" : String.valueOf(fusedPoseResult.closestTagId);
+                    telemetry = String.format("Target ID: %s (FRC Field)\n" +
+                                    "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                    "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                            targetIdStr, cameraPose.x, cameraPose.y, cameraPose.z,
+                            cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
+                } else if (closestPose != null) {
                     if (mFrcMode) {
-                        MultiTagResult multiTagResult = computeMultiTagCameraPose(mDefaultPoses);
-                        if (multiTagResult != null) {
-                            FRCTagLayout.CameraPose cameraPose = multiTagResult.cameraPose;
-                            telemetry = String.format("Target ID: %d (FRC Field Multi-Tag)\n" +
-                                            "Field Pose: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
-                                            "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                                    multiTagResult.closestTagId, cameraPose.x, cameraPose.y, cameraPose.z,
-                                    cameraPose.roll, cameraPose.pitch, cameraPose.yaw);
-                        } else {
-                            telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
-                                            "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
-                                            "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
-                                    closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
-                                    closestPose.roll, closestPose.pitch, closestPose.yaw);
-                        }
+                        telemetry = String.format("Target ID: %d (Invalid FRC Tag)\n" +
+                                        "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
+                                        "Rotation: R: %.1f° | P: %.1f° | Y: %.1f°",
+                                closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
+                                closestPose.roll, closestPose.pitch, closestPose.yaw);
                     } else {
                         telemetry = String.format("Target ID: %d\n" +
                                         "Translation: X: %.3fm | Y: %.3fm | Z: %.3fm\n" +
@@ -1680,20 +1741,15 @@ public class DetectionThread extends Thread {
                                 closestPose.id, closestPose.tx, closestPose.ty, closestPose.tz,
                                 closestPose.roll, closestPose.pitch, closestPose.yaw);
                     }
-                    mPoseTextView.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            mPoseTextView.setText(telemetry);
-                        }
-                    });
                 } else {
-                    mPoseTextView.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            mPoseTextView.setText("No Target");
-                        }
-                    });
+                    telemetry = "No Target";
                 }
+                mPoseTextView.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        mPoseTextView.setText(telemetry);
+                    }
+                });
             }
 
         } catch (Exception e) {
@@ -1701,6 +1757,123 @@ public class DetectionThread extends Thread {
         } finally {
             mTextureView.unlockCanvasAndPost(canvas);
         }
+    }
+
+    private void orthogonalizeMatrix(float[] m) {
+        // Col 0: m[0], m[1], m[2]
+        float len0 = (float) Math.sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
+        if (len0 < 1e-6f) len0 = 1.0f;
+        m[0] /= len0;
+        m[1] /= len0;
+        m[2] /= len0;
+
+        // Col 1: m[4], m[5], m[6]
+        float dot01 = m[0]*m[4] + m[1]*m[5] + m[2]*m[6];
+        m[4] -= dot01 * m[0];
+        m[5] -= dot01 * m[1];
+        m[6] -= dot01 * m[2];
+        float len1 = (float) Math.sqrt(m[4]*m[4] + m[5]*m[5] + m[6]*m[6]);
+        if (len1 < 1e-6f) len1 = 1.0f;
+        m[4] /= len1;
+        m[5] /= len1;
+        m[6] /= len1;
+
+        // Col 2: m[8], m[9], m[10] = Col 0 x Col 1
+        m[8] = m[1]*m[6] - m[2]*m[5];
+        m[9] = m[2]*m[4] - m[0]*m[6];
+        m[10] = m[0]*m[5] - m[1]*m[4];
+    }
+
+    private float[] getCameraPoseMatrix(MultiTagResult result) {
+        float[] m = new float[16];
+        double[][] R = result.R_f_c;
+        FRCTagLayout.CameraPose cp = result.cameraPose;
+
+        // Column 0
+        m[0] = (float) R[0][0];
+        m[1] = (float) R[1][0];
+        m[2] = (float) R[2][0];
+        m[3] = 0.0f;
+
+        // Column 1
+        m[4] = (float) R[0][1];
+        m[5] = (float) R[1][1];
+        m[6] = (float) R[2][1];
+        m[7] = 0.0f;
+
+        // Column 2
+        m[8] = (float) R[0][2];
+        m[9] = (float) R[1][2];
+        m[10] = (float) R[2][2];
+        m[11] = 0.0f;
+
+        // Column 3
+        m[12] = (float) cp.x;
+        m[13] = (float) cp.y;
+        m[14] = (float) cp.z;
+        m[15] = 1.0f;
+
+        return m;
+    }
+
+    private MultiTagResult matrixToMultiTagResult(float[] m, int closestTagId) {
+        double[][] R = new double[3][3];
+        R[0][0] = m[0]; R[1][0] = m[1]; R[2][0] = m[2];
+        R[0][1] = m[4]; R[1][1] = m[5]; R[2][1] = m[6];
+        R[0][2] = m[8]; R[1][2] = m[9]; R[2][2] = m[10];
+
+        // Extract Roll, Pitch, Yaw from R relative to FRC horizontal reference orientation
+        double pitch = Math.asin(-R[2][2]);
+        double roll, yaw;
+        if (Math.abs(R[2][2]) < 0.999) {
+            roll = Math.atan2(-R[2][0], -R[2][1]);
+            yaw = Math.atan2(R[1][2], R[0][2]);
+        } else {
+            roll = 0.0;
+            yaw = Math.atan2(-R[0][1], R[0][0]);
+        }
+
+        FRCTagLayout.CameraPose cameraPose = new FRCTagLayout.CameraPose(
+                m[12], m[13], m[14], Math.toDegrees(roll), Math.toDegrees(pitch), Math.toDegrees(yaw));
+
+        MultiTagResult result = new MultiTagResult();
+        result.cameraPose = cameraPose;
+        result.R_f_c = R;
+        result.closestTagId = closestTagId;
+        return result;
+    }
+
+    private MultiTagResult getFusedCameraPose(ArrayList<Pose3D> poses) {
+        MultiTagResult tagResult = null;
+        if (poses != null && poses.size() > 0) {
+            tagResult = computeMultiTagCameraPose(poses);
+        }
+
+        if (mCurrentArPose != null) {
+            if (tagResult != null) {
+                float[] T_field_camera = getCameraPoseMatrix(tagResult);
+                float[] T_ar_camera_inv = new float[16];
+                Matrix.invertM(T_ar_camera_inv, 0, mCurrentArPose, 0);
+
+                float[] T_field_ar_new = new float[16];
+                Matrix.multiplyMM(T_field_ar_new, 0, T_field_camera, 0, T_ar_camera_inv, 0);
+
+                if (!mHasAnchor) {
+                    mT_field_ar = T_field_ar_new;
+                    mHasAnchor = true;
+                } else {
+                    for (int i = 0; i < 16; i++) {
+                        mT_field_ar[i] = 0.95f * mT_field_ar[i] + 0.05f * T_field_ar_new[i];
+                    }
+                    orthogonalizeMatrix(mT_field_ar);
+                }
+            } else if (mHasAnchor) {
+                float[] T_field_camera_fused = new float[16];
+                Matrix.multiplyMM(T_field_camera_fused, 0, mT_field_ar, 0, mCurrentArPose, 0);
+                tagResult = matrixToMultiTagResult(T_field_camera_fused, -2);
+            }
+        }
+        return tagResult;
     }
 
     public void initialize() {
@@ -1716,20 +1889,23 @@ public class DetectionThread extends Thread {
                 continue;
             }
 
-            byte[] data;
+            FrameData frameData;
             try {
-                data = mCameraFrameQueue.take();
+                frameData = mCameraFrameQueue.take();
             } catch (InterruptedException e) {
                 Log.i(TAG, "Interrupted while waiting for camera frame: " + e.getMessage());
                 break;
             }
 
-            ArrayList<ApriltagDetection> detections = processCameraFrame(data, mCameraSize);
+            mCurrentArPose = frameData.arPose;
+            mCameraSize = frameData.cameraSize;
+
+            ArrayList<ApriltagDetection> detections = processCameraFrame(frameData.yuvData, frameData.cameraSize);
             renderDetections(detections);
 
             BufferReleaseListener listener = mBufferReleaseListener;
             if (listener != null) {
-                listener.onBufferReleased(data);
+                listener.onBufferReleased(frameData.yuvData);
             }
 
             mLastDetectLatency = (System.currentTimeMillis() - mLastEnqueueFrameTime);
