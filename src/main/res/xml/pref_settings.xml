@@ -22,6 +22,14 @@
             android:positiveButtonText="@null"
             android:title="@string/pref_title_decimation"/>
 
+        <ListPreference
+            android:defaultValue="largest"
+            android:key="preview_resolution"
+            android:negativeButtonText="@null"
+            android:positiveButtonText="@null"
+            android:title="Camera Preview Resolution"
+            android:summary="Select target preview resolution for AprilTag detection" />
+
         <EditTextPreference
             android:defaultValue="@string/pref_default_sigma"
             android:inputType="numberDecimal"
@@ -130,7 +138,7 @@
             android:key="diagnostics_enabled"
             android:title="Enable Diagnostics"
             android:summary="Enable additional stats and diagnostics."
-            android:defaultValue="false" />
+            android:defaultValue="true" />
     </PreferenceCategory>
 
 </PreferenceScreen>

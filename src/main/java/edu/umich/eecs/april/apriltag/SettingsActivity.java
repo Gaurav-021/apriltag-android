@@ -17,6 +17,9 @@ import android.preference.PreferenceManager;
 import android.preference.SwitchPreference;
 import android.util.Log;
 import android.view.MenuItem;
+import android.hardware.Camera;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A {@link PreferenceActivity} that presents a set of application settings. On
@@ -156,6 +159,67 @@ public class SettingsActivity extends PreferenceActivity {
             bindPreferenceSummaryToValue(findPreference("calibration_fy"));
             bindPreferenceSummaryToValue(findPreference("calibration_cx"));
             bindPreferenceSummaryToValue(findPreference("calibration_cy"));
+
+            // Populate camera preview resolutions dynamically
+            ListPreference resolutionPref = (ListPreference) findPreference("preview_resolution");
+            if (resolutionPref != null) {
+                Camera camera = null;
+                try {
+                    int camidx = 0;
+                    Camera.CameraInfo info = new Camera.CameraInfo();
+                    for (int i = 0; i < Camera.getNumberOfCameras(); i += 1) {
+                        Camera.getCameraInfo(i, info);
+                        if (info.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
+                            camidx = i;
+                            break;
+                        }
+                    }
+                    camera = Camera.open(camidx);
+                    Camera.Parameters parameters = camera.getParameters();
+                    List<Camera.Size> supportedSizes = parameters.getSupportedPreviewSizes();
+                    
+                    if (supportedSizes != null && supportedSizes.size() > 0) {
+                        ArrayList<String> entries = new ArrayList<>();
+                        ArrayList<String> entryValues = new ArrayList<>();
+                        
+                        entries.add("Default (Largest)");
+                        entryValues.add("largest");
+                        
+                        for (Camera.Size size : supportedSizes) {
+                            if (size.width == size.height) continue;
+                            String label = size.width + "x" + size.height;
+                            if (size.width == 1920 && size.height == 1080) {
+                                label += " (1080p)";
+                            } else if (size.width == 1280 && size.height == 720) {
+                                label += " (720p)";
+                            } else if (size.width == 960 && size.height == 540) {
+                                label += " (qHD)";
+                            } else if (size.width == 640 && size.height == 480) {
+                                label += " (VGA)";
+                            }
+                            entries.add(label);
+                            entryValues.add(size.width + "x" + size.height);
+                        }
+                        
+                        resolutionPref.setEntries(entries.toArray(new CharSequence[0]));
+                        resolutionPref.setEntryValues(entryValues.toArray(new CharSequence[0]));
+                        
+                        if (resolutionPref.getValue() == null) {
+                            resolutionPref.setValue("largest");
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e("SettingsActivity", "Error loading supported preview sizes: " + e.getMessage());
+                    resolutionPref.setEntries(new CharSequence[]{"Default (Largest)"});
+                    resolutionPref.setEntryValues(new CharSequence[]{"largest"});
+                    resolutionPref.setValue("largest");
+                } finally {
+                    if (camera != null) {
+                        camera.release();
+                    }
+                }
+                bindPreferenceSummaryToValue(resolutionPref);
+            }
 
             // Dynamic FRC Size locking behavior
             final Preference sizePref = findPreference("apriltag_size");

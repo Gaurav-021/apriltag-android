@@ -205,7 +205,7 @@ public class ApriltagDetectorActivity extends AppCompatActivity {
         double sigma = Double.parseDouble(sharedPreferences.getString("sigma_value", "0"));
         int nthreads = Integer.parseInt(sharedPreferences.getString("nthreads_value", "4"));
         int max_hamming_error = Integer.parseInt(sharedPreferences.getString("max_hamming_error", "0"));
-        boolean diagnosticsEnabled = sharedPreferences.getBoolean("diagnostics_enabled", false);
+        boolean diagnosticsEnabled = sharedPreferences.getBoolean("diagnostics_enabled", true);
         String tagFamily = sharedPreferences.getString("tag_family_list", "tag36h11");
         Log.i(TAG, String.format("decimation: %f | sigma: %f | nthreads: %d | tagFamily: %s",
                 decimation, sigma, nthreads, tagFamily));

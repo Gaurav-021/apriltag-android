@@ -4,6 +4,8 @@ import android.hardware.Camera;
 import android.util.Log;
 import android.view.SurfaceHolder;
 import android.widget.TextView;
+import android.content.SharedPreferences;
+import android.preference.PreferenceManager;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -162,18 +164,44 @@ public class CameraPreviewThread extends Thread {
         Camera.Parameters parameters = camera.getParameters();
 
         List<Camera.Size> sizeList = camera.getParameters().getSupportedPreviewSizes();
+        
+        SharedPreferences sharedPref = PreferenceManager.getDefaultSharedPreferences(mFpsTextView.getContext());
+        String resSetting = sharedPref.getString("preview_resolution", "largest");
+        
         Camera.Size bestSize = null;
-        for (int i = 0; i < sizeList.size(); i++) {
-            Camera.Size candidateSize = sizeList.get(i);
-            Log.i(TAG, " " + candidateSize.width + "x" + candidateSize.height + " (" + candidateSize.width * candidateSize.height + " area)");
-            if (bestSize == null || (candidateSize.width * candidateSize.height) > (bestSize.width * bestSize.height)) {
-                if (candidateSize.width != candidateSize.height) {
-                    bestSize = candidateSize;
+        if ("largest".equals(resSetting)) {
+            for (int i = 0; i < sizeList.size(); i++) {
+                Camera.Size candidateSize = sizeList.get(i);
+                Log.i(TAG, " " + candidateSize.width + "x" + candidateSize.height + " (" + candidateSize.width * candidateSize.height + " area)");
+                if (bestSize == null || (candidateSize.width * candidateSize.height) > (bestSize.width * bestSize.height)) {
+                    if (candidateSize.width != candidateSize.height) {
+                        bestSize = candidateSize;
+                    }
+                }
+            }
+        } else {
+            String[] parts = resSetting.split("x");
+            if (parts.length == 2) {
+                int targetW = Integer.parseInt(parts[0]);
+                int targetH = Integer.parseInt(parts[1]);
+                double minDiff = Double.MAX_VALUE;
+                for (Camera.Size candidateSize : sizeList) {
+                    if (candidateSize.width == candidateSize.height) continue;
+                    double diff = Math.abs(candidateSize.width - targetW) + Math.abs(candidateSize.height - targetH);
+                    if (diff < minDiff) {
+                        bestSize = candidateSize;
+                        minDiff = diff;
+                    }
                 }
             }
         }
+        
+        if (bestSize == null && sizeList.size() > 0) {
+            bestSize = sizeList.get(0);
+        }
+        
         parameters.setPreviewSize(bestSize.width, bestSize.height);
-        Log.i(TAG, "Setting " + bestSize.width + " x " + bestSize.height);
+        Log.i(TAG, "Setting preview size: " + bestSize.width + " x " + bestSize.height);
 
         List<String> focusModes = parameters.getSupportedFocusModes();
         if (focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
@@ -183,16 +211,26 @@ public class CameraPreviewThread extends Thread {
             Log.i(TAG, "Focus mode for continuous video not supported, skipping");
         }
 
-        int[] desiredFpsRange = new int[] { 15000, 15000 };
         List<int[]> fpsRanges = parameters.getSupportedPreviewFpsRange();
         Log.i(TAG, "Supported FPS ranges:");
+        int[] bestRange = null;
         for (int[] range : fpsRanges) {
             Log.i(TAG, "  [" + range[0] + ", " + range[1] + "]");
-            if (range[0] == desiredFpsRange[0] && range[1] == desiredFpsRange[1]) {
-                parameters.setPreviewFpsRange(range[0], range[1]);
-                Log.i(TAG, "Setting FPS range [" + range[0] + ", " + range[1] + "]");
-                break;
+            if (bestRange == null) {
+                bestRange = range;
+            } else {
+                // Prefer higher maximum frame rate. If maximums are equal, prefer higher minimum (more constant) frame rate.
+                if (range[1] > bestRange[1]) {
+                    bestRange = range;
+                } else if (range[1] == bestRange[1] && range[0] > bestRange[0]) {
+                    bestRange = range;
+                }
             }
+        }
+
+        if (bestRange != null) {
+            parameters.setPreviewFpsRange(bestRange[0], bestRange[1]);
+            Log.i(TAG, "Setting FPS range [" + bestRange[0] + ", " + bestRange[1] + "]");
         }
 
         camera.setDisplayOrientation(info.orientation % 360);
