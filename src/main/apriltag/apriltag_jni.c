@@ -254,3 +254,57 @@ JNIEXPORT jobject JNICALL Java_edu_umich_eecs_april_apriltag_ApriltagNative_apri
 
     return al;
 }
+
+JNIEXPORT jdoubleArray JNICALL Java_edu_umich_eecs_april_apriltag_ApriltagNative_apriltag_1detect_1yuv_1flat
+        (JNIEnv *env, jclass cls, jbyteArray _buf, jint width, jint height) {
+    if (!state.td) {
+        state.tf = tag36h11_create();
+        state.td = apriltag_detector_create();
+        apriltag_detector_add_family_bits(state.td, state.tf, 2);
+        state.td->quad_decimate = 2.0;
+        state.td->quad_sigma = 0.0;
+        state.td->nthreads = 4;
+    }
+
+    jbyte *buf = (*env)->GetByteArrayElements(env, _buf, NULL);
+    image_u8_t im = {
+            .buf = (uint8_t*)buf,
+            .height = height,
+            .width = width,
+            .stride = width
+    };
+    zarray_t *detections = apriltag_detector_detect(state.td, &im);
+    (*env)->ReleaseByteArrayElements(env, _buf, buf, 0);
+
+    int count = zarray_size(detections);
+    int size = 1 + count * 12;
+    jdoubleArray result = (*env)->NewDoubleArray(env, size);
+    if (!result) {
+        apriltag_detections_destroy(detections);
+        return NULL;
+    }
+
+    jdouble *body = (*env)->GetDoubleArrayElements(env, result, NULL);
+    body[0] = count;
+    for (int i = 0; i < count; i += 1) {
+        apriltag_detection_t *det;
+        zarray_get(detections, i, &det);
+        int offset = 1 + i * 12;
+        body[offset + 0] = det->id;
+        body[offset + 1] = det->hamming;
+        body[offset + 2] = det->c[0];
+        body[offset + 3] = det->c[1];
+        body[offset + 4] = det->p[0][0];
+        body[offset + 5] = det->p[0][1];
+        body[offset + 6] = det->p[1][0];
+        body[offset + 7] = det->p[1][1];
+        body[offset + 8] = det->p[2][0];
+        body[offset + 9] = det->p[2][1];
+        body[offset + 10] = det->p[3][0];
+        body[offset + 11] = det->p[3][1];
+    }
+    (*env)->ReleaseDoubleArrayElements(env, result, body, 0);
+    apriltag_detections_destroy(detections);
+
+    return result;
+}

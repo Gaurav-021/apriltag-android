@@ -48,6 +48,11 @@ add_library(# Specifies the name of the library.
 STRING(REPLACE "-O0" "-O4" CMAKE_C_FLAGS_DEBUG ${CMAKE_C_FLAGS_DEBUG})
 STRING(REPLACE "-O2" "-O4" CMAKE_C_FLAGS_RELEASE ${CMAKE_C_FLAGS_RELEASE})
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffast-math")
+if(ANDROID_ABI MATCHES "armeabi-v7a")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfloat-abi=softfp -mfpu=neon")
+endif()
+
 include_directories(src/main/apriltag/)
 
 find_library(log-lib log)

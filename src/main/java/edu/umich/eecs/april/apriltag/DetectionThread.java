@@ -49,6 +49,13 @@ public class DetectionThread extends Thread {
     private Bitmap mFrcFieldBitmap = null;
     private volatile float mVirtualYaw = -0.5f; // approx -30 degrees
     private volatile float mVirtualPitch = 0.4f; // approx 23 degrees
+    // Adaptive ROI Tracking state
+    private boolean mRoiActive = false;
+    private int mRoiLastTagId = -1;
+    private int mRoiCenterX = 0;
+    private int mRoiCenterY = 0;
+    private int mRoiHalfSize = 120;
+
     private float mFocalX = 0.0f;
     private float mFocalY = 0.0f;
     private float mFocalZ = 1.5f;
@@ -628,9 +635,19 @@ public class DetectionThread extends Thread {
         }
     }
 
+    private byte[] cropYPlane(byte[] fullYBytes, int fullW, int fullH, int cropX, int cropY, int cropW, int cropH) {
+        byte[] cropped = new byte[cropW * cropH];
+        for (int y = 0; y < cropH; y++) {
+            int srcPos = (cropY + y) * fullW + cropX;
+            int destPos = y * cropW;
+            System.arraycopy(fullYBytes, srcPos, cropped, destPos, cropW);
+        }
+        return cropped;
+    }
+
     private ArrayList<ApriltagDetection> processCameraFrame(byte[] data, Camera.Size cameraSize)  {
         try {
-            return ApriltagNative.apriltag_detect_yuv(data, cameraSize.width, cameraSize.height);
+            return ApriltagNative.apriltag_detect_yuv_flat_decoded(data, cameraSize.width, cameraSize.height);
         } catch (Exception e) {
             Log.e(TAG, "Unhandled exception when detecting tags: " + e);
             return new ArrayList<>();
@@ -1724,7 +1741,101 @@ public class DetectionThread extends Thread {
                 break;
             }
 
-            ArrayList<ApriltagDetection> detections = processCameraFrame(data, mCameraSize);
+            ArrayList<ApriltagDetection> detections = null;
+            if (mCameraSize != null) {
+                int fullW = mCameraSize.width;
+                int fullH = mCameraSize.height;
+
+                if (mRoiActive) {
+                    int cropW = mRoiHalfSize * 2;
+                    int cropH = mRoiHalfSize * 2;
+                    int cropX = mRoiCenterX - mRoiHalfSize;
+                    int cropY = mRoiCenterY - mRoiHalfSize;
+
+                    // Boundary clipping
+                    if (cropX < 0) cropX = 0;
+                    if (cropY < 0) cropY = 0;
+                    if (cropX + cropW > fullW) cropX = fullW - cropW;
+                    if (cropY + cropH > fullH) cropY = fullH - cropH;
+
+                    if (cropW <= fullW && cropH <= fullH && cropX >= 0 && cropY >= 0) {
+                        try {
+                            byte[] croppedY = cropYPlane(data, fullW, fullH, cropX, cropY, cropW, cropH);
+                            detections = ApriltagNative.apriltag_detect_yuv_flat_decoded(croppedY, cropW, cropH);
+                            
+                            // Offset coordinates back to full image space
+                            for (ApriltagDetection det : detections) {
+                                det.c[0] += cropX;
+                                det.c[1] += cropY;
+                                for (int k = 0; k < 8; k += 2) {
+                                    det.p[k] += cropX;
+                                    det.p[k + 1] += cropY;
+                                }
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error during ROI detection: " + e.getMessage());
+                            mRoiActive = false;
+                        }
+                    } else {
+                        mRoiActive = false;
+                    }
+                }
+
+                // Fallback to full frame detection if ROI is inactive or returned empty
+                if (detections == null || (mRoiActive && detections.isEmpty())) {
+                    detections = processCameraFrame(data, mCameraSize);
+                    mRoiActive = false;
+                }
+
+                // Update tracking locks for the next frame
+                if (detections.size() > 0) {
+                    ApriltagDetection target = null;
+                    if (mRoiActive) {
+                        for (ApriltagDetection det : detections) {
+                            if (det.id == mRoiLastTagId) {
+                                target = det;
+                                break;
+                            }
+                        }
+                    }
+                    if (target == null) {
+                        // Target closest tag to screen center
+                        double minDistance = Double.MAX_VALUE;
+                        double centerX = fullW / 2.0;
+                        double centerY = fullH / 2.0;
+                        for (ApriltagDetection det : detections) {
+                            double dist = Math.hypot(det.c[0] - centerX, det.c[1] - centerY);
+                            if (dist < minDistance) {
+                                minDistance = dist;
+                                target = det;
+                            }
+                        }
+                    }
+
+                    if (target != null) {
+                        mRoiActive = true;
+                        mRoiLastTagId = target.id;
+                        mRoiCenterX = (int) target.c[0];
+                        mRoiCenterY = (int) target.c[1];
+
+                        // Calculate adaptive ROI size based on tag dimensions in pixels
+                        double w = Math.abs(target.p[2] - target.p[0]);
+                        double h = Math.abs(target.p[5] - target.p[1]);
+                        double tagSizeInPixels = Math.max(w, h);
+
+                        mRoiHalfSize = (int) (tagSizeInPixels * 1.5);
+                        if (mRoiHalfSize < 80) mRoiHalfSize = 80;
+                        if (mRoiHalfSize > 240) mRoiHalfSize = 240;
+                    } else {
+                        mRoiActive = false;
+                    }
+                } else {
+                    mRoiActive = false;
+                }
+            } else {
+                detections = new ArrayList<>();
+            }
+
             renderDetections(detections);
 
             BufferReleaseListener listener = mBufferReleaseListener;
