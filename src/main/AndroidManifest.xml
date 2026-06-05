@@ -32,6 +32,12 @@
             android:theme="@style/PreferencesTheme"
             android:label="@string/title_activity_settings">
         </activity>
+        <activity
+            android:name=".CalibrationActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/AppTheme"
+            android:label="Camera Calibration">
+        </activity>
     </application>
 
 </manifest>

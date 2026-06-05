@@ -151,10 +151,12 @@ public class DetectionThread extends Thread {
     private boolean mFrcMode = false;
     private double mTagSize = 0.165;
     private boolean mCalOverride = false;
-    private double mCustomFx = 600.0;
-    private double mCustomFy = 600.0;
-    private double mCustomCx = 0.0;
-    private double mCustomCy = 0.0;
+    private double mBaseFx = 600.0;
+    private double mBaseFy = 600.0;
+    private double mBaseCx = 0.0;
+    private double mBaseCy = 0.0;
+    private int mCalibWidth = 0;
+    private int mCalibHeight = 0;
 
     private final SharedPreferences.OnSharedPreferenceChangeListener mPrefChangeListener = 
         new SharedPreferences.OnSharedPreferenceChangeListener() {
@@ -183,30 +185,58 @@ public class DetectionThread extends Thread {
         mCalOverride = sharedPreferences.getBoolean("calibration_override", false);
         if (mCalOverride) {
             try {
-                mCustomFx = Double.parseDouble(sharedPreferences.getString("calibration_fx", "600.0"));
+                mBaseFx = Double.parseDouble(sharedPreferences.getString("calibration_fx", "600.0"));
             } catch (NumberFormatException e) {
                 Log.e(TAG, "Invalid calibration_fx, using default 600.0");
-                mCustomFx = 600.0;
+                mBaseFx = 600.0;
             }
             try {
-                mCustomFy = Double.parseDouble(sharedPreferences.getString("calibration_fy", "600.0"));
+                mBaseFy = Double.parseDouble(sharedPreferences.getString("calibration_fy", "600.0"));
             } catch (NumberFormatException e) {
                 Log.e(TAG, "Invalid calibration_fy, using default 600.0");
-                mCustomFy = 600.0;
+                mBaseFy = 600.0;
             }
             try {
-                mCustomCx = Double.parseDouble(sharedPreferences.getString("calibration_cx", "0.0"));
+                mBaseCx = Double.parseDouble(sharedPreferences.getString("calibration_cx", "0.0"));
             } catch (NumberFormatException e) {
                 Log.e(TAG, "Invalid calibration_cx, using default 0.0");
-                mCustomCx = 0.0;
+                mBaseCx = 0.0;
             }
             try {
-                mCustomCy = Double.parseDouble(sharedPreferences.getString("calibration_cy", "0.0"));
+                mBaseCy = Double.parseDouble(sharedPreferences.getString("calibration_cy", "0.0"));
             } catch (NumberFormatException e) {
                 Log.e(TAG, "Invalid calibration_cy, using default 0.0");
-                mCustomCy = 0.0;
+                mBaseCy = 0.0;
             }
+            mCalibWidth = sharedPreferences.getInt("calibration_width", 0);
+            mCalibHeight = sharedPreferences.getInt("calibration_height", 0);
         }
+    }
+
+    private double[] getActiveIntrinsics(double defaultCx, double defaultCy) {
+        double cx = defaultCx;
+        double cy = defaultCy;
+        double fx, fy;
+
+        if (mCalOverride) {
+            if (mCalibWidth > 0 && mCalibHeight > 0 && mCameraWidth > 0 && mCameraHeight > 0) {
+                double scaleX = (double) mCameraWidth / mCalibWidth;
+                double scaleY = (double) mCameraHeight / mCalibHeight;
+                fx = mBaseFx * scaleX;
+                fy = mBaseFy * scaleY;
+                cx = mBaseCx * scaleX;
+                cy = mBaseCy * scaleY;
+            } else {
+                fx = mBaseFx;
+                fy = mBaseFy;
+                if (mBaseCx > 0.0) cx = mBaseCx;
+                if (mBaseCy > 0.0) cy = mBaseCy;
+            }
+        } else {
+            fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
+            fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
+        }
+        return new double[]{fx, fy, cx, cy};
     }
 
     public void setCameraFov(float fovH, float fovV) {
@@ -697,24 +727,13 @@ public class DetectionThread extends Thread {
         double tagSize = mTagSize;
 
         // Check for manual camera calibration settings override (using cached settings)
-        double cx = mCameraWidth / 2.0;
-        double cy = mCameraHeight / 2.0;
-        double fx, fy;
-
-        if (mCalOverride) {
-            fx = mCustomFx;
-            fy = mCustomFy;
-            if (mCustomCx > 0.0) {
-                cx = mCustomCx;
-            }
-            if (mCustomCy > 0.0) {
-                cy = mCustomCy;
-            }
-        } else {
-            // Calculate Intrinsics from dynamic view angles
-            fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
-            fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
-        }
+        double defaultCx = mCameraWidth / 2.0;
+        double defaultCy = mCameraHeight / 2.0;
+        double[] intrinsics = getActiveIntrinsics(defaultCx, defaultCy);
+        double fx = intrinsics[0];
+        double fy = intrinsics[1];
+        double cx = intrinsics[2];
+        double cy = intrinsics[3];
 
         // Estimate 3D Pose
         Pose3D pose = estimatePose(detection, tagSize, fx, fy, cx, cy);
@@ -1035,19 +1054,13 @@ public class DetectionThread extends Thread {
 
         double tagSize = 0.1651; // Locked for FRC
 
-        double cx = mCameraWidth > 0 ? mCameraWidth / 2.0 : viewWidth / 2.0;
-        double cy = mCameraHeight > 0 ? mCameraHeight / 2.0 : viewHeight / 2.0;
-        double fx, fy;
-
-        if (mCalOverride) {
-            fx = mCustomFx;
-            fy = mCustomFy;
-            if (mCustomCx > 0.0) cx = mCustomCx;
-            if (mCustomCy > 0.0) cy = mCustomCy;
-        } else {
-            fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
-            fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
-        }
+        double defaultCx = mCameraWidth > 0 ? mCameraWidth / 2.0 : viewWidth / 2.0;
+        double defaultCy = mCameraHeight > 0 ? mCameraHeight / 2.0 : viewHeight / 2.0;
+        double[] intrinsics = getActiveIntrinsics(defaultCx, defaultCy);
+        double fx = intrinsics[0];
+        double fy = intrinsics[1];
+        double cx = intrinsics[2];
+        double cy = intrinsics[3];
 
         mFrcPoses.clear();
         for (ApriltagDetection detection : detections) {
@@ -1160,23 +1173,13 @@ public class DetectionThread extends Thread {
         int height = canvas.getHeight();
 
         double tagSize = mTagSize;
-        double cx = mCameraWidth > 0 ? mCameraWidth / 2.0 : width / 2.0;
-        double cy = mCameraHeight > 0 ? mCameraHeight / 2.0 : height / 2.0;
-        double fx, fy;
-
-        if (mCalOverride) {
-            fx = mCustomFx;
-            fy = mCustomFy;
-            if (mCustomCx > 0.0) {
-                cx = mCustomCx;
-            }
-            if (mCustomCy > 0.0) {
-                cy = mCustomCy;
-            }
-        } else {
-            fx = cx / Math.tan(Math.toRadians(mFovH / 2.0));
-            fy = cy / Math.tan(Math.toRadians(mFovV / 2.0));
-        }
+        double defaultCx = mCameraWidth > 0 ? mCameraWidth / 2.0 : width / 2.0;
+        double defaultCy = mCameraHeight > 0 ? mCameraHeight / 2.0 : height / 2.0;
+        double[] intrinsics = getActiveIntrinsics(defaultCx, defaultCy);
+        double fx = intrinsics[0];
+        double fy = intrinsics[1];
+        double cx = intrinsics[2];
+        double cy = intrinsics[3];
 
         double sumX = 0, sumY = 0, sumZ = 0;
         int validCount = 0;

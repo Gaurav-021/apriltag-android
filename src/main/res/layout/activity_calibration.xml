@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- Camera Preview View (Base Layer) -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/calibrationPreview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Checkerboard Corners Overlay View (Middle Layer) -->
+    <edu.umich.eecs.april.apriltag.CalibrationOverlayView
+        android:id="@+id/calibrationOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Top HUD: Information & Progress (Translucent Glassmorphic Style) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_margin="16dp"
+        android:background="@drawable/floating_header_bg"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:elevation="6dp">
+
+        <TextView
+            android:id="@+id/calibrationProgressText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="Captured Frames: 0 / 12"
+            android:textColor="@android:color/white"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/calibrationStatusText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="4dp"
+            android:text="Hold checkerboard pattern (9x6 corners) in view"
+            android:textColor="#00E5FF"
+            android:textSize="12sp"
+            android:textStyle="normal"
+            android:gravity="center" />
+    </LinearLayout>
+
+    <!-- Bottom Controls Overlay -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:padding="24dp">
+
+        <!-- Back Button -->
+        <Button
+            android:id="@+id/btnCancelCalibration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:text="Cancel"
+            android:textColor="@android:color/white"
+            android:background="@android:color/transparent" />
+
+        <!-- Capture Bboard Button (Circular trigger style) -->
+        <FrameLayout
+            android:id="@+id/btnCaptureFrame"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:layout_centerInParent="true"
+            android:background="@drawable/capture_button_outer">
+
+            <View
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:layout_gravity="center"
+                android:background="@drawable/capture_button_inner" />
+        </FrameLayout>
+
+        <!-- Solve/Calibrate Button -->
+        <Button
+            android:id="@+id/btnRunCalibration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:text="Calibrate"
+            android:textColor="#00E5FF"
+            android:enabled="false"
+            android:background="@android:color/transparent" />
+
+    </RelativeLayout>
+
+</FrameLayout>

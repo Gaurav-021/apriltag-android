@@ -83,6 +83,16 @@
         android:title="Camera Calibration"
         android:key="pref_cat_calibration">
 
+        <Preference
+            android:key="download_calibration_pattern"
+            android:title="Printable Checkerboard (PDF)"
+            android:summary="Download standard 10x7 (9x6 inner corners) calibration target sheet" />
+
+        <Preference
+            android:key="start_calibration"
+            android:title="Start Calibration"
+            android:summary="Launch interactive checkerboard calibration screen" />
+
         <SwitchPreference
             android:key="calibration_override"
             android:title="@string/pref_title_calibration_override"

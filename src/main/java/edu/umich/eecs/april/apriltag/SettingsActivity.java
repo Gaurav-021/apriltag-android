@@ -7,6 +7,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.preference.ListPreference;
@@ -236,6 +237,33 @@ public class SettingsActivity extends PreferenceActivity {
                     public boolean onPreferenceChange(Preference preference, Object newValue) {
                         boolean enabled = (Boolean) newValue;
                         sizePref.setEnabled(!enabled);
+                        return true;
+                    }
+                });
+            }
+
+            // Open printable checkerboard pattern URL
+            final Preference patternPref = findPreference("download_calibration_pattern");
+            if (patternPref != null) {
+                patternPref.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
+                    @Override
+                    public boolean onPreferenceClick(Preference preference) {
+                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(
+                                "https://markhedleyjones.com/downloads/checkerboard-A4-30mm-10x7.pdf"));
+                        startActivity(intent);
+                        return true;
+                    }
+                });
+            }
+
+            // Launch checkerboard camera calibration
+            final Preference startCalPref = findPreference("start_calibration");
+            if (startCalPref != null) {
+                startCalPref.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
+                    @Override
+                    public boolean onPreferenceClick(Preference preference) {
+                        Intent intent = new Intent(getActivity(), CalibrationActivity.class);
+                        startActivity(intent);
                         return true;
                     }
                 });
